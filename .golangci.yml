@@ -1,23 +1,25 @@
 linters:
-  disable:
-    - structcheck # gives false positives
   enable:
     - gofumpt
     - thelper
     - goimports
     - tparallel
     - wastedassign
-    - exportloopref
     - unparam
     - prealloc
     - unconvert
     - exhaustive
     - makezero
     - nakedret
-    # - goconst # TODO: enable and fix issues
+    - copyloopvar
   fast: false
 
 linters-settings:
+  copyloopvar:
+    # Check all assigning the loop variable to another variable.
+    # Default: false
+    # If true, an assignment like `a := x` will be detected as an error.
+    check-alias: true
   exhaustive:
     default-signifies-exhaustive: true
   staticcheck:
@@ -30,5 +32,5 @@ linters-settings:
     max-func-lines: 0
 
 run:
-  go: '1.20'
+  go: '1.22'
   timeout: 10m

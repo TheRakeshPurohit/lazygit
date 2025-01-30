@@ -2,12 +2,14 @@ package helpers
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jesseduffield/gocui"
 	"github.com/jesseduffield/lazygit/pkg/gui/context"
 	"github.com/jesseduffield/lazygit/pkg/gui/keybindings"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 	"github.com/jesseduffield/lazygit/pkg/theme"
+	"github.com/jesseduffield/lazygit/pkg/utils"
 )
 
 // NOTE: this helper supports both filtering and searching. Filtering is when
@@ -39,11 +41,9 @@ func (self *SearchHelper) OpenFilterPrompt(context types.IFilterableContext) err
 	self.OnPromptContentChanged("")
 	promptView.RenderTextArea()
 
-	if err := self.c.PushContext(self.c.Contexts().Search); err != nil {
-		return err
-	}
+	self.c.Context().Push(self.c.Contexts().Search)
 
-	return nil
+	return self.c.ResetKeybindings()
 }
 
 func (self *SearchHelper) OpenSearchPrompt(context types.ISearchableContext) error {
@@ -58,11 +58,9 @@ func (self *SearchHelper) OpenSearchPrompt(context types.ISearchableContext) err
 	promptView.ClearTextArea()
 	promptView.RenderTextArea()
 
-	if err := self.c.PushContext(self.c.Contexts().Search); err != nil {
-		return err
-	}
+	self.c.Context().Push(self.c.Contexts().Search)
 
-	return nil
+	return self.c.ResetKeybindings()
 }
 
 func (self *SearchHelper) DisplayFilterStatus(context types.IFilterableContext) {
@@ -74,7 +72,7 @@ func (self *SearchHelper) DisplayFilterStatus(context types.IFilterableContext) 
 	self.searchPrefixView().SetContent(self.c.Tr.FilterPrefix)
 
 	promptView := self.promptView()
-	keybindingConfig := self.c.UserConfig.Keybinding
+	keybindingConfig := self.c.UserConfig().Keybinding
 	promptView.SetContent(fmt.Sprintf("matches for '%s' ", searchString) + theme.OptionsFgColor.Sprintf(self.c.Tr.ExitTextFilterMode, keybindings.Label(keybindingConfig.Universal.Return)))
 }
 
@@ -110,26 +108,31 @@ func (self *SearchHelper) Confirm() error {
 		return self.CancelPrompt()
 	}
 
+	var err error
 	switch state.SearchType() {
 	case types.SearchTypeFilter:
-		return self.ConfirmFilter()
+		self.ConfirmFilter()
 	case types.SearchTypeSearch:
-		return self.ConfirmSearch()
+		err = self.ConfirmSearch()
 	case types.SearchTypeNone:
-		return self.c.PopContext()
+		self.c.Context().Pop()
 	}
 
-	return nil
+	if err != nil {
+		return err
+	}
+
+	return self.c.ResetKeybindings()
 }
 
-func (self *SearchHelper) ConfirmFilter() error {
+func (self *SearchHelper) ConfirmFilter() {
 	// We also do this on each keypress but we do it here again just in case
 	state := self.searchState()
 
 	context, ok := state.Context.(types.IFilterableContext)
 	if !ok {
 		self.c.Log.Warnf("Context %s is not filterable", state.Context.GetKey())
-		return nil
+		return
 	}
 
 	self.OnPromptContentChanged(self.promptContent())
@@ -138,7 +141,7 @@ func (self *SearchHelper) ConfirmFilter() error {
 		context.GetSearchHistory().Push(filterString)
 	}
 
-	return self.c.PopContext()
+	self.c.Context().Pop()
 }
 
 func (self *SearchHelper) ConfirmSearch() error {
@@ -156,23 +159,32 @@ func (self *SearchHelper) ConfirmSearch() error {
 		context.GetSearchHistory().Push(searchString)
 	}
 
-	view := context.GetView()
+	self.c.Context().Pop()
 
-	if err := self.c.PopContext(); err != nil {
-		return err
+	return context.GetView().Search(searchString, modelSearchResults(context))
+}
+
+func modelSearchResults(context types.ISearchableContext) []gocui.SearchPosition {
+	searchString := context.GetSearchString()
+
+	var normalizedSearchStr string
+	// if we have any uppercase characters we'll do a case-sensitive search
+	caseSensitive := utils.ContainsUppercase(searchString)
+	if caseSensitive {
+		normalizedSearchStr = searchString
+	} else {
+		normalizedSearchStr = strings.ToLower(searchString)
 	}
 
-	if err := view.Search(searchString); err != nil {
-		return err
-	}
-
-	return nil
+	return context.ModelSearchResults(normalizedSearchStr, caseSensitive)
 }
 
 func (self *SearchHelper) CancelPrompt() error {
 	self.Cancel()
 
-	return self.c.PopContext()
+	self.c.Context().Pop()
+
+	return self.c.ResetKeybindings()
 }
 
 func (self *SearchHelper) ScrollHistory(scrollIncrement int) {
@@ -201,7 +213,7 @@ func (self *SearchHelper) Cancel() {
 	switch context := state.Context.(type) {
 	case types.IFilterableContext:
 		context.ClearFilter()
-		_ = self.c.PostRefreshUpdate(context)
+		self.c.PostRefreshUpdate(context)
 	case types.ISearchableContext:
 		context.ClearSearchString()
 		context.GetView().ClearSearch()
@@ -217,9 +229,9 @@ func (self *SearchHelper) OnPromptContentChanged(searchString string) {
 	switch context := state.Context.(type) {
 	case types.IFilterableContext:
 		context.SetSelection(0)
-		_ = context.GetView().SetOriginY(0)
-		context.SetFilter(searchString)
-		_ = self.c.PostRefreshUpdate(context)
+		context.GetView().SetOriginY(0)
+		context.SetFilter(searchString, self.c.UserConfig().Gui.UseFuzzySearch())
+		self.c.PostRefreshUpdate(context)
 	case types.ISearchableContext:
 		// do nothing
 	default:
@@ -228,13 +240,32 @@ func (self *SearchHelper) OnPromptContentChanged(searchString string) {
 }
 
 func (self *SearchHelper) ReApplyFilter(context types.Context) {
-	state := self.searchState()
-	if context == state.Context {
-		filterableContext, ok := context.(types.IFilterableContext)
-		if ok {
+	filterableContext, ok := context.(types.IFilterableContext)
+	if ok {
+		state := self.searchState()
+		if context == state.Context {
 			filterableContext.SetSelection(0)
-			_ = filterableContext.GetView().SetOriginY(0)
-			filterableContext.ReApplyFilter()
+			filterableContext.GetView().SetOriginY(0)
+		}
+		filterableContext.ReApplyFilter(self.c.UserConfig().Gui.UseFuzzySearch())
+	}
+}
+
+func (self *SearchHelper) ReApplySearch(ctx types.Context) {
+	// Reapply the search if the model has changed. This is needed for contexts
+	// that use the model for searching, to pass the new model search positions
+	// to the view.
+	searchableContext, ok := ctx.(types.ISearchableContext)
+	if ok {
+		ctx.GetView().UpdateSearchResults(searchableContext.GetSearchString(), modelSearchResults(searchableContext))
+
+		state := self.searchState()
+		if ctx == state.Context {
+			// Re-render the "x of y" search status, unless the search prompt is
+			// open for typing.
+			if self.c.Context().Current().GetKey() != context.SEARCH_CONTEXT_KEY {
+				self.RenderSearchStatus(searchableContext)
+			}
 		}
 	}
 }

@@ -49,10 +49,14 @@ var CherryPickConflicts = NewIntegrationTest(NewIntegrationTestArgs{
 
 		t.ExpectPopup().Alert().
 			Title(Equals("Cherry-pick")).
-			Content(Contains("Are you sure you want to cherry-pick the copied commits onto this branch?")).
+			Content(Contains("Are you sure you want to cherry-pick the 2 copied commit(s) onto this branch?")).
 			Confirm()
 
 		t.Common().AcknowledgeConflicts()
+
+		// cherry pick selection is not cleared when there are conflicts, so that the user
+		// is able to abort and try again without having to re-copy the commits
+		t.Views().Information().Content(Contains("2 commits copied"))
 
 		t.Views().Files().
 			IsFocused().

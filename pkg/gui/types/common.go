@@ -33,7 +33,7 @@ type IGuiCommon interface {
 	// we call this when we've changed something in the view model but not the actual model,
 	// e.g. expanding or collapsing a folder in a file view. Calling 'Refresh' in this
 	// case would be overkill, although refresh will internally call 'PostRefreshUpdate'
-	PostRefreshUpdate(Context) error
+	PostRefreshUpdate(Context)
 
 	// renders string to a view without resetting its origin
 	SetViewContent(view *gocui.View, content string)
@@ -45,7 +45,7 @@ type IGuiCommon interface {
 	// allows rendering to main views (i.e. the ones to the right of the side panel)
 	// in such a way that avoids concurrency issues when there are slow commands
 	// to display the output of
-	RenderToMainViews(opts RefreshMainOpts) error
+	RenderToMainViews(opts RefreshMainOpts)
 	// used purely for the sake of RenderToMainViews to provide the pair of main views we want to render to
 	MainViewPairs() MainViewPairs
 
@@ -53,22 +53,8 @@ type IGuiCommon interface {
 	RunSubprocess(cmdObj oscommands.ICmdObj) (bool, error)
 	RunSubprocessAndRefresh(oscommands.ICmdObj) error
 
-	PushContext(context Context, opts ...OnFocusOpts) error
-	PopContext() error
-	ReplaceContext(context Context) error
-	// Removes all given contexts from the stack. If a given context is not in the stack, it is ignored.
-	// This is for when you have a group of contexts that are bundled together e.g. with the commit message panel.
-	// If you want to remove a single context, you should probably use PopContext instead.
-	RemoveContexts([]Context) error
-	CurrentContext() Context
-	CurrentStaticContext() Context
-	CurrentSideContext() Context
-	IsCurrentContext(Context) bool
-	// TODO: replace the above context-based methods with just using Context() e.g. replace PushContext() with Context().Push()
 	Context() IContextMgr
 	ContextForKey(key ContextKey) Context
-
-	ActivateContext(context Context) error
 
 	GetConfig() config.AppConfigurer
 	GetAppState() *config.AppState
@@ -81,7 +67,7 @@ type IGuiCommon interface {
 	OnUIThread(f func() error)
 	// Runs a function in a goroutine. Use this whenever you want to run a goroutine and keep track of the fact
 	// that lazygit is still busy. See docs/dev/Busy.md
-	OnWorker(f func(gocui.Task))
+	OnWorker(f func(gocui.Task) error)
 	// Function to call at the end of our 'layout' function which renders views
 	// For example, you may want a view's line to be focused only after that view is
 	// resized, if in accordion mode.
@@ -112,6 +98,8 @@ type IGuiCommon interface {
 	KeybindingsOpts() KeybindingsOpts
 	CallKeybindingHandler(binding *Binding) error
 
+	ResetKeybindings() error
+
 	// hopefully we can remove this once we've moved all our keybinding stuff out of the gui god struct.
 	GetInitialKeybindingsWithCustomCommands() ([]*Binding, []*gocui.ViewMouseBinding)
 
@@ -127,19 +115,16 @@ type IModeMgr interface {
 }
 
 type IPopupHandler interface {
-	// Shows a popup with a (localized) "Error" caption and the given error message (in red).
-	//
-	// This is a convenience wrapper around Alert().
-	ErrorMsg(message string) error
-	Error(err error) error
+	// The global error handler for gocui. Not to be used by application code.
+	ErrorHandler(err error) error
 	// Shows a notification popup with the given title and message to the user.
 	//
 	// This is a convenience wrapper around Confirm(), thus the popup can be closed using both 'Enter' and 'ESC'.
-	Alert(title string, message string) error
+	Alert(title string, message string)
 	// Shows a popup asking the user for confirmation.
-	Confirm(opts ConfirmOpts) error
+	Confirm(opts ConfirmOpts)
 	// Shows a popup prompting the user for input.
-	Prompt(opts PromptOpts) error
+	Prompt(opts PromptOpts)
 	WithWaitingStatus(message string, f func(gocui.Task) error) error
 	WithWaitingStatusSync(message string, f func() error) error
 	Menu(opts CreateMenuOptions) error
@@ -158,22 +143,25 @@ const (
 
 type CreateMenuOptions struct {
 	Title           string
+	Prompt          string // a message that will be displayed above the menu options
 	Items           []*MenuItem
 	HideCancel      bool
 	ColumnAlignment []utils.Alignment
 }
 
 type CreatePopupPanelOpts struct {
-	HasLoader           bool
-	Editable            bool
-	Title               string
-	Prompt              string
-	HandleConfirm       func() error
-	HandleConfirmPrompt func(string) error
-	HandleClose         func() error
+	HasLoader              bool
+	Editable               bool
+	Title                  string
+	Prompt                 string
+	HandleConfirm          func() error
+	HandleConfirmPrompt    func(string) error
+	HandleClose            func() error
+	HandleDeleteSuggestion func(int) error
 
 	FindSuggestionsFunc func(string) []*Suggestion
 	Mask                bool
+	AllowEditSuggestion bool
 }
 
 type ConfirmOpts struct {
@@ -191,9 +179,11 @@ type PromptOpts struct {
 	InitialContent      string
 	FindSuggestionsFunc func(string) []*Suggestion
 	HandleConfirm       func(string) error
+	AllowEditSuggestion bool
 	// CAPTURE THIS
-	HandleClose func() error
-	Mask        bool
+	HandleClose            func() error
+	HandleDeleteSuggestion func(int) error
+	Mask                   bool
 }
 
 type MenuSection struct {
@@ -211,6 +201,30 @@ type DisabledReason struct {
 	ShowErrorInPanel bool
 }
 
+type MenuWidget int
+
+const (
+	MenuWidgetNone MenuWidget = iota
+	MenuWidgetRadioButtonSelected
+	MenuWidgetRadioButtonUnselected
+	MenuWidgetCheckboxSelected
+	MenuWidgetCheckboxUnselected
+)
+
+func MakeMenuRadioButton(value bool) MenuWidget {
+	if value {
+		return MenuWidgetRadioButtonSelected
+	}
+	return MenuWidgetRadioButtonUnselected
+}
+
+func MakeMenuCheckBox(value bool) MenuWidget {
+	if value {
+		return MenuWidgetCheckboxSelected
+	}
+	return MenuWidgetCheckboxUnselected
+}
+
 type MenuItem struct {
 	Label string
 
@@ -226,6 +240,12 @@ type MenuItem struct {
 	// item, as opposed to having to navigate to it
 	Key Key
 
+	// A widget to show in front of the menu item. Supported widget types are
+	// checkboxes and radio buttons,
+	// This only handles the rendering of the widget; the behavior needs to be
+	// provided by the client.
+	Widget MenuWidget
+
 	// The tooltip will be displayed upon highlighting the menu item
 	Tooltip string
 
@@ -240,6 +260,12 @@ type MenuItem struct {
 	// belong to the same section, so make sure all your items in a given
 	// section point to the same MenuSection instance.
 	Section *MenuSection
+}
+
+// Defining this for the sake of conforming to the HasID interface, which is used
+// in list contexts.
+func (self *MenuItem) ID() string {
+	return self.Label
 }
 
 type Model struct {
@@ -269,6 +295,8 @@ type Model struct {
 	// Name of the currently checked out branch. This will be set even when
 	// we're on a detached head because we're rebasing or bisecting.
 	CheckedOutBranch string
+
+	MainBranches *git_commands.MainBranches
 
 	// for displaying suggestions while typing in a file name
 	FilesTrie *patricia.Trie
@@ -302,6 +330,8 @@ const (
 	ItemOperationPulling
 	ItemOperationFastForwarding
 	ItemOperationDeleting
+	ItemOperationFetching
+	ItemOperationCheckingOut
 )
 
 type HasUrn interface {
@@ -332,8 +362,8 @@ type IRepoStateAccessor interface {
 	SetStartupStage(stage StartupStage)
 	GetCurrentPopupOpts() *CreatePopupPanelOpts
 	SetCurrentPopupOpts(*CreatePopupPanelOpts)
-	GetScreenMode() WindowMaximisation
-	SetScreenMode(WindowMaximisation)
+	GetScreenMode() ScreenMode
+	SetScreenMode(ScreenMode)
 	InSearchPrompt() bool
 	GetSearchState() *SearchState
 	SetSplitMainPanel(bool)
@@ -352,10 +382,10 @@ const (
 // as in panel, not your terminal's window). Sometimes you want a bit more space
 // to see the contents of a panel, and this keeps track of how much maximisation
 // you've set
-type WindowMaximisation int
+type ScreenMode int
 
 const (
-	SCREEN_NORMAL WindowMaximisation = iota
+	SCREEN_NORMAL ScreenMode = iota
 	SCREEN_HALF
 	SCREEN_FULL
 )

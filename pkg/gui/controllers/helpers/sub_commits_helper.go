@@ -39,10 +39,12 @@ func (self *SubCommitsHelper) ViewSubCommits(opts ViewSubCommitsOpts) error {
 		git_commands.GetCommitsOptions{
 			Limit:                   true,
 			FilterPath:              self.c.Modes().Filtering.GetPath(),
+			FilterAuthor:            self.c.Modes().Filtering.GetAuthor(),
 			IncludeRebaseCommits:    false,
 			RefName:                 opts.Ref.FullRefName(),
 			RefForPushedStatus:      opts.Ref.FullRefName(),
 			RefToShowDivergenceFrom: opts.RefToShowDivergenceFrom,
+			MainBranches:            self.c.Model().MainBranches,
 		},
 	)
 	if err != nil {
@@ -65,10 +67,8 @@ func (self *SubCommitsHelper) ViewSubCommits(opts ViewSubCommitsOpts) error {
 	subCommitsContext.GetView().ClearSearch()
 	subCommitsContext.GetView().TitlePrefix = opts.Context.GetView().TitlePrefix
 
-	err = self.c.PostRefreshUpdate(self.c.Contexts().SubCommits)
-	if err != nil {
-		return err
-	}
+	self.c.PostRefreshUpdate(self.c.Contexts().SubCommits)
 
-	return self.c.PushContext(self.c.Contexts().SubCommits)
+	self.c.Context().Push(self.c.Contexts().SubCommits)
+	return nil
 }

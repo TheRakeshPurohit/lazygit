@@ -1,8 +1,11 @@
 package controllers
 
 import (
+	"github.com/jesseduffield/gocui"
 	"github.com/jesseduffield/lazygit/pkg/gui/context"
+	"github.com/jesseduffield/lazygit/pkg/gui/keybindings"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
+	"github.com/jesseduffield/lazygit/pkg/utils"
 )
 
 type CommitDescriptionController struct {
@@ -36,8 +39,8 @@ func (self *CommitDescriptionController) GetKeybindings(opts types.KeybindingsOp
 			Handler: self.confirm,
 		},
 		{
-			Key:     opts.GetKey(opts.Config.CommitMessage.SwitchToEditor),
-			Handler: self.switchToEditor,
+			Key:     opts.GetKey(opts.Config.CommitMessage.CommitMenu),
+			Handler: self.openCommitMenu,
 		},
 	}
 
@@ -45,25 +48,52 @@ func (self *CommitDescriptionController) GetKeybindings(opts types.KeybindingsOp
 }
 
 func (self *CommitDescriptionController) Context() types.Context {
-	return self.context()
+	return self.c.Contexts().CommitDescription
 }
 
-func (self *CommitDescriptionController) context() *context.CommitMessageContext {
-	return self.c.Contexts().CommitMessage
+func (self *CommitDescriptionController) GetMouseKeybindings(opts types.KeybindingsOpts) []*gocui.ViewMouseBinding {
+	return []*gocui.ViewMouseBinding{
+		{
+			ViewName: self.Context().GetViewName(),
+			Key:      gocui.MouseLeft,
+			Handler:  self.onClick,
+		},
+	}
+}
+
+func (self *CommitDescriptionController) GetOnFocus() func(types.OnFocusOpts) {
+	return func(types.OnFocusOpts) {
+		self.c.Views().CommitDescription.Footer = utils.ResolvePlaceholderString(self.c.Tr.CommitDescriptionFooter,
+			map[string]string{
+				"confirmInEditorKeybinding": keybindings.Label(self.c.UserConfig().Keybinding.Universal.ConfirmInEditor),
+			})
+	}
 }
 
 func (self *CommitDescriptionController) switchToCommitMessage() error {
-	return self.c.PushContext(self.c.Contexts().CommitMessage)
+	self.c.Context().Replace(self.c.Contexts().CommitMessage)
+	return nil
 }
 
 func (self *CommitDescriptionController) close() error {
-	return self.c.Helpers().Commits.CloseCommitMessagePanel()
+	self.c.Helpers().Commits.CloseCommitMessagePanel()
+	return nil
 }
 
 func (self *CommitDescriptionController) confirm() error {
 	return self.c.Helpers().Commits.HandleCommitConfirm()
 }
 
-func (self *CommitDescriptionController) switchToEditor() error {
-	return self.c.Helpers().Commits.SwitchToEditor()
+func (self *CommitDescriptionController) openCommitMenu() error {
+	authorSuggestion := self.c.Helpers().Suggestions.GetAuthorsSuggestionsFunc()
+	return self.c.Helpers().Commits.OpenCommitMenu(authorSuggestion)
+}
+
+func (self *CommitDescriptionController) onClick(opts gocui.ViewMouseBindingOpts) error {
+	// Activate the description panel when the commit message panel is currently active
+	if self.c.Context().Current().GetKey() == context.COMMIT_MESSAGE_CONTEXT_KEY {
+		self.c.Context().Replace(self.c.Contexts().CommitDescription)
+	}
+
+	return nil
 }

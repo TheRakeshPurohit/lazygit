@@ -509,7 +509,6 @@ func TestTransform(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			lineIndices := ExpandRange(s.firstLineIndex, s.lastLineIndex)
 
@@ -566,7 +565,6 @@ func TestParseAndFormatPlain(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			// here we parse the patch, then format it, and ensure the result
 			// matches the original patch. Note that unified diffs allow omitting
@@ -604,7 +602,6 @@ func TestLineNumberOfLine(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			for i, idx := range s.indexes {
 				patch := Parse(s.patchStr)
@@ -633,12 +630,67 @@ func TestGetNextStageableLineIndex(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			for i, idx := range s.indexes {
 				patch := Parse(s.patchStr)
 				result := patch.GetNextChangeIdx(idx)
 				assert.Equal(t, s.expecteds[i], result)
+			}
+		})
+	}
+}
+
+func TestAdjustLineNumber(t *testing.T) {
+	type scenario struct {
+		oldLineNumbers  []int
+		expectedResults []int
+	}
+	scenarios := []scenario{
+		{
+			oldLineNumbers:  []int{1, 2, 3, 4, 5, 6, 7},
+			expectedResults: []int{1, 2, 2, 3, 4, 7, 8},
+		},
+	}
+
+	// The following diff was generated from old.txt:
+	//   1
+	//   2a
+	//   2b
+	//   3
+	//   4
+	//   7
+	//   8
+	// against new.txt:
+	//   1
+	//   2
+	//   3
+	//   4
+	//   5
+	//   6
+	//   7
+	//   8
+
+	// This test setup makes the test easy to understand, because the resulting
+	// adjusted line numbers are the same as the content of the lines in new.txt.
+
+	diff := `--- old.txt	2024-12-16 18:04:29
++++ new.txt	2024-12-16 18:04:27
+@@ -2,2 +2 @@
+-2a
+-2b
++2
+@@ -5,0 +5,2 @@
++5
++6
+`
+
+	patch := Parse(diff)
+
+	for _, s := range scenarios {
+		t.Run("TestAdjustLineNumber", func(t *testing.T) {
+			for idx, oldLineNumber := range s.oldLineNumbers {
+				result := patch.AdjustLineNumber(oldLineNumber)
+				assert.Equal(t, s.expectedResults[idx], result)
 			}
 		})
 	}

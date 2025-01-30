@@ -2,6 +2,7 @@ package presentation
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,7 +19,12 @@ import (
 	"github.com/samber/lo"
 )
 
-var branchPrefixColorCache = make(map[string]style.TextStyle)
+type colorMatcher struct {
+	patterns map[string]style.TextStyle
+	isRegex  bool // NOTE: this value is needed only until the deprecated branchColors config is removed and only regex color patterns are used
+}
+
+var colorPatterns *colorMatcher
 
 func GetBranchListDisplayStrings(
 	branches []*models.Branch,
@@ -50,13 +56,13 @@ func getBranchDisplayStrings(
 ) []string {
 	checkedOutByWorkTree := git_commands.CheckedOutByOtherWorktree(b, worktrees)
 	showCommitHash := fullDescription || userConfig.Gui.ShowBranchCommitHash
-	branchStatus := BranchStatus(b, itemOperation, tr, now)
+	branchStatus := BranchStatus(b, itemOperation, tr, now, userConfig)
 	worktreeIcon := lo.Ternary(icons.IsIconEnabled(), icons.LINKED_WORKTREE_ICON, fmt.Sprintf("(%s)", tr.LcWorktree))
 
 	// Recency is always three characters, plus one for the space
 	availableWidth := viewWidth - 4
 	if len(branchStatus) > 0 {
-		availableWidth -= runewidth.StringWidth(branchStatus) + 1
+		availableWidth -= utils.StringWidth(utils.Decolorise(branchStatus)) + 1
 	}
 	if icons.IsIconEnabled() {
 		availableWidth -= 2 // one for the icon, one for the space
@@ -65,7 +71,7 @@ func getBranchDisplayStrings(
 		availableWidth -= utils.COMMIT_HASH_SHORT_SIZE + 1
 	}
 	if checkedOutByWorkTree {
-		availableWidth -= runewidth.StringWidth(worktreeIcon) + 1
+		availableWidth -= utils.StringWidth(worktreeIcon) + 1
 	}
 
 	displayName := b.Name
@@ -79,18 +85,17 @@ func getBranchDisplayStrings(
 	}
 
 	// Don't bother shortening branch names that are already 3 characters or less
-	if len(displayName) > utils.Max(availableWidth, 3) {
+	if utils.StringWidth(displayName) > max(availableWidth, 3) {
 		// Never shorten the branch name to less then 3 characters
-		len := utils.Max(availableWidth, 4)
-		displayName = displayName[:len-1] + "…"
+		len := max(availableWidth, 4)
+		displayName = runewidth.Truncate(displayName, len, "…")
 	}
 	coloredName := nameTextStyle.Sprint(displayName)
 	if checkedOutByWorkTree {
 		coloredName = fmt.Sprintf("%s %s", coloredName, style.FgDefault.Sprint(worktreeIcon))
 	}
 	if len(branchStatus) > 0 {
-		coloredStatus := branchStatusColor(b, itemOperation).Sprint(branchStatus)
-		coloredName = fmt.Sprintf("%s %s", coloredName, coloredStatus)
+		coloredName = fmt.Sprintf("%s %s", coloredName, branchStatus)
 	}
 
 	recencyColor := style.FgCyan
@@ -106,7 +111,7 @@ func getBranchDisplayStrings(
 	}
 
 	if showCommitHash {
-		res = append(res, utils.ShortSha(b.CommitHash))
+		res = append(res, utils.ShortHash(b.CommitHash))
 	}
 
 	res = append(res, coloredName)
@@ -126,75 +131,80 @@ func getBranchDisplayStrings(
 
 // GetBranchTextStyle branch color
 func GetBranchTextStyle(name string) style.TextStyle {
-	branchType := strings.Split(name, "/")[0]
-
-	if value, ok := branchPrefixColorCache[branchType]; ok {
-		return value
+	if style, ok := colorPatterns.match(name); ok {
+		return *style
 	}
 
-	switch branchType {
-	case "feature":
-		return style.FgGreen
-	case "bugfix":
-		return style.FgYellow
-	case "hotfix":
-		return style.FgRed
-	default:
-		return theme.DefaultTextColor
-	}
+	return theme.DefaultTextColor
 }
 
-func branchStatusColor(branch *models.Branch, itemOperation types.ItemOperation) style.TextStyle {
-	colour := style.FgYellow
-	if itemOperation != types.ItemOperationNone {
-		colour = style.FgCyan
-	} else if branch.UpstreamGone {
-		colour = style.FgRed
-	} else if branch.MatchesUpstream() {
-		colour = style.FgGreen
-	} else if branch.RemoteBranchNotStoredLocally() {
-		colour = style.FgMagenta
+func (m *colorMatcher) match(name string) (*style.TextStyle, bool) {
+	if m.isRegex {
+		for pattern, style := range m.patterns {
+			if matched, _ := regexp.MatchString(pattern, name); matched {
+				return &style, true
+			}
+		}
+	} else {
+		// old behavior using the deprecated branchColors behavior matching on branch type
+		branchType := strings.Split(name, "/")[0]
+		if value, ok := m.patterns[branchType]; ok {
+			return &value, true
+		}
 	}
 
-	return colour
+	return nil, false
 }
 
-func ColoredBranchStatus(branch *models.Branch, itemOperation types.ItemOperation, tr *i18n.TranslationSet) string {
-	return branchStatusColor(branch, itemOperation).Sprint(BranchStatus(branch, itemOperation, tr, time.Now()))
-}
-
-func BranchStatus(branch *models.Branch, itemOperation types.ItemOperation, tr *i18n.TranslationSet, now time.Time) string {
+func BranchStatus(
+	branch *models.Branch,
+	itemOperation types.ItemOperation,
+	tr *i18n.TranslationSet,
+	now time.Time,
+	userConfig *config.UserConfig,
+) string {
 	itemOperationStr := ItemOperationToString(itemOperation, tr)
 	if itemOperationStr != "" {
-		return itemOperationStr + " " + utils.Loader(now)
-	}
-
-	if !branch.IsTrackingRemote() {
-		return ""
-	}
-
-	if branch.UpstreamGone {
-		return tr.UpstreamGone
-	}
-
-	if branch.MatchesUpstream() {
-		return "✓"
-	}
-	if branch.RemoteBranchNotStoredLocally() {
-		return "?"
+		return style.FgCyan.Sprintf("%s %s", itemOperationStr, utils.Loader(now, userConfig.Gui.Spinner))
 	}
 
 	result := ""
-	if branch.HasCommitsToPush() {
-		result = fmt.Sprintf("↑%s", branch.Pushables)
+	if branch.IsTrackingRemote() {
+		if branch.UpstreamGone {
+			result = style.FgRed.Sprint(tr.UpstreamGone)
+		} else if branch.MatchesUpstream() {
+			result = style.FgGreen.Sprint("✓")
+		} else if branch.RemoteBranchNotStoredLocally() {
+			result = style.FgMagenta.Sprint("?")
+		} else if branch.IsBehindForPull() && branch.IsAheadForPull() {
+			result = style.FgYellow.Sprintf("↓%s↑%s", branch.BehindForPull, branch.AheadForPull)
+		} else if branch.IsBehindForPull() {
+			result = style.FgYellow.Sprintf("↓%s", branch.BehindForPull)
+		} else if branch.IsAheadForPull() {
+			result = style.FgYellow.Sprintf("↑%s", branch.AheadForPull)
+		}
 	}
-	if branch.HasCommitsToPull() {
-		result = fmt.Sprintf("%s↓%s", result, branch.Pullables)
+
+	if userConfig.Gui.ShowDivergenceFromBaseBranch != "none" {
+		behind := branch.BehindBaseBranch.Load()
+		if behind != 0 {
+			if result != "" {
+				result += " "
+			}
+			if userConfig.Gui.ShowDivergenceFromBaseBranch == "arrowAndNumber" {
+				result += style.FgCyan.Sprintf("↓%d", behind)
+			} else {
+				result += style.FgCyan.Sprintf("↓")
+			}
+		}
 	}
 
 	return result
 }
 
-func SetCustomBranches(customBranchColors map[string]string) {
-	branchPrefixColorCache = utils.SetCustomColors(customBranchColors)
+func SetCustomBranches(customBranchColors map[string]string, isRegex bool) {
+	colorPatterns = &colorMatcher{
+		patterns: utils.SetCustomColors(customBranchColors),
+		isRegex:  isRegex,
+	}
 }

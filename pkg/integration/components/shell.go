@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
-
-	"github.com/jesseduffield/lazygit/pkg/utils"
 )
 
 // this is for running shell commands, mostly for the sake of setting up the repo
@@ -19,6 +17,9 @@ import (
 type Shell struct {
 	// working directory the shell is invoked in
 	dir string
+	// passed into each command
+	env []string
+
 	// when running the shell outside the gui we can directly panic on failure,
 	// but inside the gui we need to close the gui before panicking
 	fail func(string)
@@ -26,14 +27,15 @@ type Shell struct {
 	randomFileContentIndex int
 }
 
-func NewShell(dir string, fail func(string)) *Shell {
-	return &Shell{dir: dir, fail: fail}
+func NewShell(dir string, env []string, fail func(string)) *Shell {
+	return &Shell{dir: dir, env: env, fail: fail}
 }
 
 func (self *Shell) RunCommand(args []string) *Shell {
 	return self.RunCommandWithEnv(args, []string{})
 }
 
+// Run a command with additional environment variables set
 func (self *Shell) RunCommandWithEnv(args []string, env []string) *Shell {
 	output, err := self.runCommandWithOutputAndEnv(args, env)
 	if err != nil {
@@ -58,7 +60,7 @@ func (self *Shell) runCommandWithOutput(args []string) (string, error) {
 
 func (self *Shell) runCommandWithOutputAndEnv(args []string, env []string) (string, error) {
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(self.env, env...)
 	cmd.Dir = self.dir
 
 	output, err := cmd.CombinedOutput()
@@ -140,6 +142,10 @@ func (self *Shell) NewBranchFrom(name string, from string) *Shell {
 	return self.RunCommand([]string{"git", "checkout", "-b", name, from})
 }
 
+func (self *Shell) RenameCurrentBranch(newName string) *Shell {
+	return self.RunCommand([]string{"git", "branch", "-m", newName})
+}
+
 func (self *Shell) Checkout(name string) *Shell {
 	return self.RunCommand([]string{"git", "checkout", name})
 }
@@ -184,6 +190,10 @@ func (self *Shell) Revert(ref string) *Shell {
 	return self.RunCommand([]string{"git", "revert", ref})
 }
 
+func (self *Shell) AssertRemoteTagNotFound(upstream, name string) *Shell {
+	return self.RunCommandExpectError([]string{"git", "ls-remote", "--exit-code", upstream, fmt.Sprintf("refs/tags/%s", name)})
+}
+
 func (self *Shell) CreateLightweightTag(name string, ref string) *Shell {
 	return self.RunCommand([]string{"git", "tag", name, ref})
 }
@@ -193,6 +203,10 @@ func (self *Shell) CreateAnnotatedTag(name string, message string, ref string) *
 }
 
 func (self *Shell) PushBranch(upstream, branch string) *Shell {
+	return self.RunCommand([]string{"git", "push", upstream, branch})
+}
+
+func (self *Shell) PushBranchAndSetUpstream(upstream, branch string) *Shell {
 	return self.RunCommand([]string{"git", "push", "--set-upstream", upstream, branch})
 }
 
@@ -285,7 +299,7 @@ func (self *Shell) CreateRepoHistory() *Shell {
 
 		// Choose a random commit within the last 20 commits on the master branch
 		lastMasterCommit := totalCommits - 1
-		commitOffset := rand.Intn(utils.Min(lastMasterCommit, 5)) + 1
+		commitOffset := rand.Intn(min(lastMasterCommit, 5)) + 1
 
 		// Create the feature branch and checkout the chosen commit
 		self.NewBranchFrom(branchName, fmt.Sprintf("master~%d", commitOffset))
@@ -341,15 +355,21 @@ func (self *Shell) CloneIntoRemote(name string) *Shell {
 	return self
 }
 
-func (self *Shell) CloneIntoSubmodule(submoduleName string) *Shell {
+func (self *Shell) CloneIntoSubmodule(submoduleName string, submodulePath string) *Shell {
 	self.Clone("other_repo")
-	self.RunCommand([]string{"git", "submodule", "add", "../other_repo", submoduleName})
+	self.RunCommand([]string{"git", "submodule", "add", "--name", submoduleName, "../other_repo", submodulePath})
 
 	return self
 }
 
 func (self *Shell) Clone(repoName string) *Shell {
 	self.RunCommand([]string{"git", "clone", "--bare", ".", "../" + repoName})
+
+	return self
+}
+
+func (self *Shell) CloneNonBare(repoName string) *Shell {
+	self.RunCommand([]string{"git", "clone", ".", "../" + repoName})
 
 	return self
 }
@@ -461,8 +481,8 @@ func (self *Shell) CopyFile(source string, destination string) *Shell {
 	return self
 }
 
-// NOTE: this only takes effect before running the test;
-// the test will still run in the original directory
+// The final value passed to Chdir() during setup
+// will be the directory the test is run from.
 func (self *Shell) Chdir(path string) *Shell {
 	self.dir = filepath.Join(self.dir, path)
 

@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/jesseduffield/gocui"
@@ -62,8 +63,8 @@ func (self *WorktreeHelper) NewWorktree() error {
 	branch := self.refsHelper.GetCheckedOutRef()
 	currentBranchName := branch.RefName()
 
-	f := func(detached bool) error {
-		return self.c.Prompt(types.PromptOpts{
+	f := func(detached bool) {
+		self.c.Prompt(types.PromptOpts{
 			Title:               self.c.Tr.NewWorktreeBase,
 			InitialContent:      currentBranchName,
 			FindSuggestionsFunc: self.suggestionsHelper.GetRefsSuggestionsFunc(),
@@ -83,13 +84,15 @@ func (self *WorktreeHelper) NewWorktree() error {
 			{
 				LabelColumns: []string{utils.ResolvePlaceholderString(self.c.Tr.CreateWorktreeFrom, placeholders)},
 				OnPress: func() error {
-					return f(false)
+					f(false)
+					return nil
 				},
 			},
 			{
 				LabelColumns: []string{utils.ResolvePlaceholderString(self.c.Tr.CreateWorktreeFromDetached, placeholders)},
 				OnPress: func() error {
-					return f(true)
+					f(true)
+					return nil
 				},
 			},
 		},
@@ -113,7 +116,7 @@ func (self *WorktreeHelper) NewWorktreeCheckout(base string, canCheckoutBase boo
 		})
 	}
 
-	return self.c.Prompt(types.PromptOpts{
+	self.c.Prompt(types.PromptOpts{
 		Title: self.c.Tr.NewWorktreePath,
 		HandleConfirm: func(path string) error {
 			opts.Path = path
@@ -125,7 +128,7 @@ func (self *WorktreeHelper) NewWorktreeCheckout(base string, canCheckoutBase boo
 			if canCheckoutBase {
 				title := utils.ResolvePlaceholderString(self.c.Tr.NewBranchNameLeaveBlank, map[string]string{"default": base})
 				// prompt for the new branch name where a blank means we just check out the branch
-				return self.c.Prompt(types.PromptOpts{
+				self.c.Prompt(types.PromptOpts{
 					Title: title,
 					HandleConfirm: func(branchName string) error {
 						opts.Branch = branchName
@@ -133,13 +136,15 @@ func (self *WorktreeHelper) NewWorktreeCheckout(base string, canCheckoutBase boo
 						return f()
 					},
 				})
+
+				return nil
 			} else {
 				// prompt for the new branch name where a blank means we just check out the branch
-				return self.c.Prompt(types.PromptOpts{
+				self.c.Prompt(types.PromptOpts{
 					Title: self.c.Tr.NewBranchName,
 					HandleConfirm: func(branchName string) error {
 						if branchName == "" {
-							return self.c.ErrorMsg(self.c.Tr.BranchNameCannotBeBlank)
+							return errors.New(self.c.Tr.BranchNameCannotBeBlank)
 						}
 
 						opts.Branch = branchName
@@ -147,14 +152,18 @@ func (self *WorktreeHelper) NewWorktreeCheckout(base string, canCheckoutBase boo
 						return f()
 					},
 				})
+
+				return nil
 			}
 		},
 	})
+
+	return nil
 }
 
 func (self *WorktreeHelper) Switch(worktree *models.Worktree, contextKey types.ContextKey) error {
 	if worktree.IsCurrent {
-		return self.c.ErrorMsg(self.c.Tr.AlreadyInWorktree)
+		return errors.New(self.c.Tr.AlreadyInWorktree)
 	}
 
 	self.c.LogAction(self.c.Tr.SwitchToWorktree)
@@ -177,7 +186,7 @@ func (self *WorktreeHelper) Remove(worktree *models.Worktree, force bool) error 
 		},
 	)
 
-	return self.c.Confirm(types.ConfirmOpts{
+	self.c.Confirm(types.ConfirmOpts{
 		Title:  title,
 		Prompt: message,
 		HandleConfirm: func() error {
@@ -186,18 +195,20 @@ func (self *WorktreeHelper) Remove(worktree *models.Worktree, force bool) error 
 				if err := self.c.Git().Worktree.Delete(worktree.Path, force); err != nil {
 					errMessage := err.Error()
 					if !strings.Contains(errMessage, "--force") {
-						return self.c.Error(err)
+						return err
 					}
 
 					if !force {
 						return self.Remove(worktree, true)
 					}
-					return self.c.ErrorMsg(errMessage)
+					return err
 				}
 				return self.c.Refresh(types.RefreshOptions{Mode: types.ASYNC, Scope: []types.RefreshableView{types.WORKTREES, types.BRANCHES, types.FILES}})
 			})
 		},
 	})
+
+	return nil
 }
 
 func (self *WorktreeHelper) Detach(worktree *models.Worktree) error {
@@ -206,7 +217,7 @@ func (self *WorktreeHelper) Detach(worktree *models.Worktree) error {
 
 		err := self.c.Git().Worktree.Detach(worktree.Path)
 		if err != nil {
-			return self.c.Error(err)
+			return err
 		}
 		return self.c.Refresh(types.RefreshOptions{Mode: types.ASYNC, Scope: []types.RefreshableView{types.WORKTREES, types.BRANCHES, types.FILES}})
 	})

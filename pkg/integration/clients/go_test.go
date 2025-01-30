@@ -4,7 +4,7 @@
 package clients
 
 // This file allows you to use `go test` to run integration tests.
-// See See pkg/integration/README.md for more info.
+// See pkg/integration/README.md for more info.
 
 import (
 	"bytes"
@@ -42,12 +42,6 @@ func TestIntegration(t *testing.T) {
 		TestWrapper: func(test *components.IntegrationTest, f func() error) {
 			defer func() { testNumber += 1 }()
 			if testNumber%parallelTotal != parallelIndex {
-				return
-			}
-
-			// not running demoes right now. Arguably we should, but we'd need to
-			// strip away any artificial lag they use.
-			if test.IsDemo() {
 				return
 			}
 

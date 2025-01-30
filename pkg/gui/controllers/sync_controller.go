@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -35,12 +36,14 @@ func (self *SyncController) GetKeybindings(opts types.KeybindingsOpts) []*types.
 			Handler:           opts.Guards.NoPopupPanel(self.HandlePush),
 			GetDisabledReason: self.getDisabledReasonForPushOrPull,
 			Description:       self.c.Tr.Push,
+			Tooltip:           self.c.Tr.PushTooltip,
 		},
 		{
 			Key:               opts.GetKey(opts.Config.Universal.Pull),
 			Handler:           opts.Guards.NoPopupPanel(self.HandlePull),
 			GetDisabledReason: self.getDisabledReasonForPushOrPull,
 			Description:       self.c.Tr.Pull,
+			Tooltip:           self.c.Tr.PullTooltip,
 		},
 	}
 
@@ -84,10 +87,10 @@ func (self *SyncController) branchCheckedOut(f func(*models.Branch) error) func(
 }
 
 func (self *SyncController) push(currentBranch *models.Branch) error {
-	// if we have pullables we'll ask if the user wants to force push
+	// if we are behind our upstream branch we'll ask if the user wants to force push
 	if currentBranch.IsTrackingRemote() {
-		opts := pushOpts{}
-		if currentBranch.HasCommitsToPull() {
+		opts := pushOpts{remoteBranchStoredLocally: currentBranch.RemoteBranchStoredLocally()}
+		if currentBranch.IsBehindForPush() {
 			return self.requestToForcePush(currentBranch, opts)
 		} else {
 			return self.pushAux(currentBranch, opts)
@@ -99,7 +102,7 @@ func (self *SyncController) push(currentBranch *models.Branch) error {
 			return self.c.Helpers().Upstream.PromptForUpstreamWithInitialContent(currentBranch, func(upstream string) error {
 				upstreamRemote, upstreamBranch, err := self.c.Helpers().Upstream.ParseUpstream(upstream)
 				if err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.pushAux(currentBranch, pushOpts{
@@ -119,7 +122,7 @@ func (self *SyncController) pull(currentBranch *models.Branch) error {
 	if !currentBranch.IsTrackingRemote() {
 		return self.c.Helpers().Upstream.PromptForUpstreamWithInitialContent(currentBranch, func(upstream string) error {
 			if err := self.setCurrentBranchUpstream(upstream); err != nil {
-				return self.c.Error(err)
+				return err
 			}
 
 			return self.PullAux(currentBranch, PullFilesOptions{Action: action})
@@ -177,9 +180,16 @@ func (self *SyncController) pullWithLock(task gocui.Task, opts PullFilesOptions)
 
 type pushOpts struct {
 	force          bool
+	forceWithLease bool
 	upstreamRemote string
 	upstreamBranch string
 	setUpstream    bool
+
+	// If this is false, we can't tell ahead of time whether a force-push will
+	// be necessary, so we start with a normal push and offer to force-push if
+	// the server rejected. If this is true, we don't offer to force-push if the
+	// server rejected, but rather ask the user to fetch.
+	remoteBranchStoredLocally bool
 }
 
 func (self *SyncController) pushAux(currentBranch *models.Branch, opts pushOpts) error {
@@ -189,18 +199,23 @@ func (self *SyncController) pushAux(currentBranch *models.Branch, opts pushOpts)
 			task,
 			git_commands.PushOpts{
 				Force:          opts.force,
+				ForceWithLease: opts.forceWithLease,
+				CurrentBranch:  currentBranch.Name,
 				UpstreamRemote: opts.upstreamRemote,
 				UpstreamBranch: opts.upstreamBranch,
 				SetUpstream:    opts.setUpstream,
 			})
 		if err != nil {
-			if !opts.force && strings.Contains(err.Error(), "Updates were rejected") {
-				forcePushDisabled := self.c.UserConfig.Git.DisableForcePushing
-				if forcePushDisabled {
-					_ = self.c.ErrorMsg(self.c.Tr.UpdatesRejectedAndForcePushDisabled)
-					return nil
+			if !opts.force && !opts.forceWithLease && strings.Contains(err.Error(), "Updates were rejected") {
+				if opts.remoteBranchStoredLocally {
+					return errors.New(self.c.Tr.UpdatesRejected)
 				}
-				_ = self.c.Confirm(types.ConfirmOpts{
+
+				forcePushDisabled := self.c.UserConfig().Git.DisableForcePushing
+				if forcePushDisabled {
+					return errors.New(self.c.Tr.UpdatesRejectedAndForcePushDisabled)
+				}
+				self.c.Confirm(types.ConfirmOpts{
 					Title:  self.c.Tr.ForcePush,
 					Prompt: self.forcePushPrompt(),
 					HandleConfirm: func() error {
@@ -219,27 +234,29 @@ func (self *SyncController) pushAux(currentBranch *models.Branch, opts pushOpts)
 }
 
 func (self *SyncController) requestToForcePush(currentBranch *models.Branch, opts pushOpts) error {
-	forcePushDisabled := self.c.UserConfig.Git.DisableForcePushing
+	forcePushDisabled := self.c.UserConfig().Git.DisableForcePushing
 	if forcePushDisabled {
-		return self.c.ErrorMsg(self.c.Tr.ForcePushDisabled)
+		return errors.New(self.c.Tr.ForcePushDisabled)
 	}
 
-	return self.c.Confirm(types.ConfirmOpts{
+	self.c.Confirm(types.ConfirmOpts{
 		Title:  self.c.Tr.ForcePush,
 		Prompt: self.forcePushPrompt(),
 		HandleConfirm: func() error {
-			opts.force = true
+			opts.forceWithLease = true
 			return self.pushAux(currentBranch, opts)
 		},
 	})
+
+	return nil
 }
 
 func (self *SyncController) forcePushPrompt() string {
 	return utils.ResolvePlaceholderString(
 		self.c.Tr.ForcePushPrompt,
 		map[string]string{
-			"cancelKey":  self.c.UserConfig.Keybinding.Universal.Return,
-			"confirmKey": self.c.UserConfig.Keybinding.Universal.Confirm,
+			"cancelKey":  self.c.UserConfig().Keybinding.Universal.Return,
+			"confirmKey": self.c.UserConfig().Keybinding.Universal.Confirm,
 		},
 	)
 }

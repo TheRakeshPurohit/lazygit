@@ -13,21 +13,18 @@ import (
 	"github.com/xo/terminfo"
 )
 
-func init() {
-	color.ForceSetColorLevel(terminfo.ColorLevelNone)
-}
-
 func toStringSlice(str string) []string {
 	return strings.Split(strings.TrimSpace(str), "\n")
 }
 
 func TestRenderFileTree(t *testing.T) {
 	scenarios := []struct {
-		name           string
-		root           *filetree.FileNode
-		files          []*models.File
-		collapsedPaths []string
-		expected       []string
+		name            string
+		root            *filetree.FileNode
+		files           []*models.File
+		collapsedPaths  []string
+		showLineChanges bool
+		expected        []string
 	}{
 		{
 			name:     "nil node",
@@ -40,6 +37,22 @@ func TestRenderFileTree(t *testing.T) {
 				{Name: "test", ShortStatus: " M", HasStagedChanges: true},
 			},
 			expected: []string{" M test"},
+		},
+		{
+			name: "numstat",
+			files: []*models.File{
+				{Name: "test", ShortStatus: " M", HasStagedChanges: true, LinesAdded: 1, LinesDeleted: 1},
+				{Name: "test2", ShortStatus: " M", HasStagedChanges: true, LinesAdded: 1},
+				{Name: "test3", ShortStatus: " M", HasStagedChanges: true, LinesDeleted: 1},
+				{Name: "test4", ShortStatus: " M", HasStagedChanges: true, LinesAdded: 0, LinesDeleted: 0},
+			},
+			showLineChanges: true,
+			expected: []string{
+				" M test +1 -1",
+				" M test2 +1",
+				" M test3 -1",
+				" M test4",
+			},
 		},
 		{
 			name: "big example",
@@ -66,15 +79,17 @@ M  file1
 		},
 	}
 
+	oldColorLevel := color.ForceSetColorLevel(terminfo.ColorLevelNone)
+	defer color.ForceSetColorLevel(oldColorLevel)
+
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.name, func(t *testing.T) {
 			viewModel := filetree.NewFileTree(func() []*models.File { return s.files }, utils.NewDummyLog(), true)
 			viewModel.SetTree()
 			for _, path := range s.collapsedPaths {
 				viewModel.ToggleCollapsed(path)
 			}
-			result := RenderFileTree(viewModel, nil)
+			result := RenderFileTree(viewModel, nil, false, s.showLineChanges)
 			assert.EqualValues(t, s.expected, result)
 		})
 	}
@@ -125,8 +140,10 @@ M file1
 		},
 	}
 
+	oldColorLevel := color.ForceSetColorLevel(terminfo.ColorLevelNone)
+	defer color.ForceSetColorLevel(oldColorLevel)
+
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.name, func(t *testing.T) {
 			viewModel := filetree.NewCommitFileTreeViewModel(func() []*models.CommitFile { return s.files }, utils.NewDummyLog(), true)
 			viewModel.SetRef(&models.Commit{})
@@ -141,7 +158,7 @@ M file1
 				},
 			)
 			patchBuilder.Start("from", "to", false, false)
-			result := RenderCommitFileTree(viewModel, patchBuilder)
+			result := RenderCommitFileTree(viewModel, patchBuilder, false)
 			assert.EqualValues(t, s.expected, result)
 		})
 	}

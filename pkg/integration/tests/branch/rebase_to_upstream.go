@@ -15,9 +15,10 @@ var RebaseToUpstream = NewIntegrationTest(NewIntegrationTestArgs{
 			CloneIntoRemote("origin").
 			EmptyCommit("ensure-master").
 			EmptyCommit("to-be-added"). // <- this will only exist remotely
-			PushBranch("origin", "master").
+			PushBranchAndSetUpstream("origin", "master").
+			RenameCurrentBranch("master-local").
 			HardReset("HEAD~1").
-			NewBranchFrom("base-branch", "master").
+			NewBranchFrom("base-branch", "master-local").
 			EmptyCommit("base-branch-commit").
 			NewBranch("target").
 			EmptyCommit("target-commit")
@@ -34,13 +35,13 @@ var RebaseToUpstream = NewIntegrationTest(NewIntegrationTestArgs{
 			Lines(
 				Contains("target").IsSelected(),
 				Contains("base-branch"),
-				Contains("master"),
+				Contains("master-local"),
 			).
 			SelectNextItem().
 			Lines(
 				Contains("target"),
 				Contains("base-branch").IsSelected(),
-				Contains("master"),
+				Contains("master-local"),
 			).
 			Press(keys.Branches.SetUpstream).
 			Tap(func() {
@@ -58,7 +59,7 @@ var RebaseToUpstream = NewIntegrationTest(NewIntegrationTestArgs{
 			Lines(
 				Contains("target"),
 				Contains("base-branch"),
-				Contains("master").IsSelected(),
+				Contains("master-local").IsSelected(),
 			).
 			Press(keys.Branches.SetUpstream).
 			Tap(func() {
@@ -67,7 +68,7 @@ var RebaseToUpstream = NewIntegrationTest(NewIntegrationTestArgs{
 					Select(Contains("Rebase checked-out branch onto origin/master...")).
 					Confirm()
 				t.ExpectPopup().Menu().
-					Title(Equals("Rebase 'target' onto 'origin/master'")).
+					Title(Equals("Rebase 'target'")).
 					Select(Contains("Simple rebase")).
 					Confirm()
 			})

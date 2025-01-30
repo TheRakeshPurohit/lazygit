@@ -30,7 +30,7 @@ func NewTagsContext(
 		return presentation.GetTagListDisplayStrings(
 			viewModel.GetItems(),
 			c.State().GetItemOperation,
-			c.Modes().Diffing.Ref, c.Tr)
+			c.Modes().Diffing.Ref, c.Tr, c.UserConfig())
 	}
 
 	return &TagsContext{
@@ -52,15 +52,6 @@ func NewTagsContext(
 	}
 }
 
-func (self *TagsContext) GetSelectedItemId() string {
-	item := self.GetSelected()
-	if item == nil {
-		return ""
-	}
-
-	return item.ID()
-}
-
 func (self *TagsContext) GetSelectedRef() types.Ref {
 	tag := self.GetSelected()
 	if tag == nil {
@@ -73,6 +64,10 @@ func (self *TagsContext) GetDiffTerminals() []string {
 	itemId := self.GetSelectedItemId()
 
 	return []string{itemId}
+}
+
+func (self *TagsContext) RefForAdjustingLineNumberInDiff() string {
+	return self.GetSelectedItemId()
 }
 
 func (self *TagsContext) ShowBranchHeadsInSubCommits() bool {

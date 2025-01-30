@@ -5,9 +5,7 @@
 
 # Hidden
 .*
-
-# TODO
-TODO.*
+!.codespellrc
 
 # Notes
 *.notes
@@ -22,6 +20,7 @@ lazygit.exe
 
 # Exceptions
 !.gitignore
+!.gitattributes
 !.goreleaser.yml
 !.golangci.yml
 !.circleci/

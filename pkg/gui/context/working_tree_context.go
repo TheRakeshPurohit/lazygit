@@ -1,9 +1,11 @@
 package context
 
 import (
+	"github.com/jesseduffield/gocui"
 	"github.com/jesseduffield/lazygit/pkg/commands/models"
 	"github.com/jesseduffield/lazygit/pkg/gui/filetree"
 	"github.com/jesseduffield/lazygit/pkg/gui/presentation"
+	"github.com/jesseduffield/lazygit/pkg/gui/presentation/icons"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 	"github.com/samber/lo"
 )
@@ -14,17 +16,22 @@ type WorkingTreeContext struct {
 	*SearchTrait
 }
 
-var _ types.IListContext = (*WorkingTreeContext)(nil)
+var (
+	_ types.IListContext       = (*WorkingTreeContext)(nil)
+	_ types.ISearchableContext = (*WorkingTreeContext)(nil)
+)
 
 func NewWorkingTreeContext(c *ContextCommon) *WorkingTreeContext {
 	viewModel := filetree.NewFileTreeViewModel(
 		func() []*models.File { return c.Model().Files },
 		c.Log,
-		c.UserConfig.Gui.ShowFileTree,
+		c.UserConfig().Gui.ShowFileTree,
 	)
 
 	getDisplayStrings := func(_ int, _ int) [][]string {
-		lines := presentation.RenderFileTree(viewModel, c.Model().Submodules)
+		showFileIcons := icons.IsIconEnabled() && c.UserConfig().Gui.ShowFileIcons
+		showNumstat := c.UserConfig().Gui.ShowNumstatInFilesView
+		lines := presentation.RenderFileTree(viewModel, c.Model().Submodules, showFileIcons, showNumstat)
 		return lo.Map(lines, func(line string, _ int) []string {
 			return []string{line}
 		})
@@ -49,19 +56,11 @@ func NewWorkingTreeContext(c *ContextCommon) *WorkingTreeContext {
 		},
 	}
 
-	ctx.GetView().SetOnSelectItem(ctx.SearchTrait.onSelectItemWrapper(func(selectedLineIdx int) error {
-		ctx.GetList().SetSelection(selectedLineIdx)
-		return ctx.HandleFocus(types.OnFocusOpts{})
-	}))
+	ctx.GetView().SetOnSelectItem(ctx.SearchTrait.onSelectItemWrapper(ctx.OnSearchSelect))
 
 	return ctx
 }
 
-func (self *WorkingTreeContext) GetSelectedItemId() string {
-	item := self.GetSelected()
-	if item == nil {
-		return ""
-	}
-
-	return item.ID()
+func (self *WorkingTreeContext) ModelSearchResults(searchStr string, caseSensitive bool) []gocui.SearchPosition {
+	return nil
 }

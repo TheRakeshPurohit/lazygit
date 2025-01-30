@@ -1,12 +1,14 @@
 package filetree
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/jesseduffield/lazygit/pkg/commands/models"
 	"github.com/jesseduffield/lazygit/pkg/gui/context/traits"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 	"github.com/jesseduffield/lazygit/pkg/utils"
+	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,15 +22,15 @@ type IFileTreeViewModel interface {
 // after the files are refreshed
 type FileTreeViewModel struct {
 	sync.RWMutex
-	IFileTree
 	types.IListCursor
+	IFileTree
 }
 
 var _ IFileTreeViewModel = &FileTreeViewModel{}
 
 func NewFileTreeViewModel(getFiles func() []*models.File, log *logrus.Entry, showTree bool) *FileTreeViewModel {
 	fileTree := NewFileTree(getFiles, log, showTree)
-	listCursor := traits.NewListCursor(fileTree)
+	listCursor := traits.NewListCursor(fileTree.Len)
 	return &FileTreeViewModel{
 		IFileTree:   fileTree,
 		IListCursor: listCursor,
@@ -41,6 +43,40 @@ func (self *FileTreeViewModel) GetSelected() *FileNode {
 	}
 
 	return self.Get(self.GetSelectedLineIdx())
+}
+
+func (self *FileTreeViewModel) GetSelectedItemId() string {
+	item := self.GetSelected()
+	if item == nil {
+		return ""
+	}
+
+	return item.ID()
+}
+
+func (self *FileTreeViewModel) GetSelectedItems() ([]*FileNode, int, int) {
+	if self.Len() == 0 {
+		return nil, 0, 0
+	}
+
+	startIdx, endIdx := self.GetSelectionRange()
+
+	nodes := []*FileNode{}
+	for i := startIdx; i <= endIdx; i++ {
+		nodes = append(nodes, self.Get(i))
+	}
+
+	return nodes, startIdx, endIdx
+}
+
+func (self *FileTreeViewModel) GetSelectedItemIds() ([]string, int, int) {
+	selectedItems, startIdx, endIdx := self.GetSelectedItems()
+
+	ids := lo.Map(selectedItems, func(item *FileNode, _ int) string {
+		return item.ID()
+	})
+
+	return ids, startIdx, endIdx
 }
 
 func (self *FileTreeViewModel) GetSelectedFile() *models.File {
@@ -151,6 +187,36 @@ func (self *FileTreeViewModel) ToggleShowTree() {
 	}
 
 	index, found := self.GetIndexForPath(path)
+	if found {
+		self.SetSelectedLineIdx(index)
+	}
+}
+
+func (self *FileTreeViewModel) CollapseAll() {
+	selectedNode := self.GetSelected()
+
+	self.IFileTree.CollapseAll()
+	if selectedNode == nil {
+		return
+	}
+
+	topLevelPath := strings.Split(selectedNode.Path, "/")[0]
+	index, found := self.GetIndexForPath(topLevelPath)
+	if found {
+		self.SetSelectedLineIdx(index)
+	}
+}
+
+func (self *FileTreeViewModel) ExpandAll() {
+	selectedNode := self.GetSelected()
+
+	self.IFileTree.ExpandAll()
+
+	if selectedNode == nil {
+		return
+	}
+
+	index, found := self.GetIndexForPath(selectedNode.Path)
 	if found {
 		self.SetSelectedLineIdx(index)
 	}

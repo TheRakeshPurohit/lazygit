@@ -1,7 +1,8 @@
 package gui
 
 import (
-	"strings"
+	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/jesseduffield/gocui"
@@ -23,7 +24,7 @@ func (self *BackgroundRoutineMgr) PauseBackgroundRefreshes(pause bool) {
 }
 
 func (self *BackgroundRoutineMgr) startBackgroundRoutines() {
-	userConfig := self.gui.UserConfig
+	userConfig := self.gui.UserConfig()
 
 	if userConfig.Git.AutoFetch {
 		fetchInterval := userConfig.Refresher.FetchInterval
@@ -46,26 +47,46 @@ func (self *BackgroundRoutineMgr) startBackgroundRoutines() {
 				refreshInterval)
 		}
 	}
+
+	if self.gui.Config.GetDebug() {
+		self.goEvery(time.Second*time.Duration(10), self.gui.stopChan, func() error {
+			formatBytes := func(b uint64) string {
+				const unit = 1000
+				if b < unit {
+					return fmt.Sprintf("%d B", b)
+				}
+				div, exp := uint64(unit), 0
+				for n := b / unit; n >= unit; n /= unit {
+					div *= unit
+					exp++
+				}
+				return fmt.Sprintf("%.1f %cB",
+					float64(b)/float64(div), "kMGTPE"[exp])
+			}
+
+			m := runtime.MemStats{}
+			runtime.ReadMemStats(&m)
+			self.gui.c.Log.Infof("Heap memory in use: %s", formatBytes(m.HeapAlloc))
+			return nil
+		})
+	}
 }
 
 func (self *BackgroundRoutineMgr) startBackgroundFetch() {
 	self.gui.waitForIntro.Wait()
 
-	isNew := self.gui.IsNewRepo
-	userConfig := self.gui.UserConfig
-	if !isNew {
-		time.After(time.Duration(userConfig.Refresher.FetchInterval) * time.Second)
+	fetch := func() error {
+		return self.gui.helpers.AppStatus.WithWaitingStatusImpl(self.gui.Tr.FetchingStatus, func(gocui.Task) error {
+			return self.backgroundFetch()
+		}, nil)
 	}
-	err := self.backgroundFetch()
-	if err != nil && strings.Contains(err.Error(), "exit status 128") && isNew {
-		_ = self.gui.c.Alert(self.gui.c.Tr.NoAutomaticGitFetchTitle, self.gui.c.Tr.NoAutomaticGitFetchBody)
-	} else {
-		self.goEvery(time.Second*time.Duration(userConfig.Refresher.FetchInterval), self.gui.stopChan, func() error {
-			err := self.backgroundFetch()
-			self.gui.c.Render()
-			return err
-		})
-	}
+
+	// We want an immediate fetch at startup, and since goEvery starts by
+	// waiting for the interval, we need to trigger one manually first
+	_ = fetch()
+
+	userConfig := self.gui.UserConfig()
+	self.goEvery(time.Second*time.Duration(userConfig.Refresher.FetchInterval), self.gui.stopChan, fetch)
 }
 
 func (self *BackgroundRoutineMgr) startBackgroundFilesRefresh(refreshInterval int) {
@@ -87,9 +108,10 @@ func (self *BackgroundRoutineMgr) goEvery(interval time.Duration, stop chan stru
 				if self.pauseBackgroundRefreshes {
 					continue
 				}
-				self.gui.c.OnWorker(func(gocui.Task) {
+				self.gui.c.OnWorker(func(gocui.Task) error {
 					_ = function()
 					done <- struct{}{}
+					return nil
 				})
 				// waiting so that we don't bunch up refreshes if the refresh takes longer than the interval
 				<-done

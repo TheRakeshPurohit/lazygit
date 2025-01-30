@@ -12,7 +12,7 @@ var CopyToClipboard = NewIntegrationTest(NewIntegrationTestArgs{
 	ExtraCmdArgs: []string{},
 	Skip:         false,
 	SetupConfig: func(config *config.AppConfig) {
-		config.UserConfig.OS.CopyToClipboardCmd = "echo {{text}} > clipboard"
+		config.GetUserConfig().OS.CopyToClipboardCmd = "echo {{text}} > clipboard"
 	},
 
 	SetupRepo: func(shell *Shell) {
@@ -27,7 +27,7 @@ var CopyToClipboard = NewIntegrationTest(NewIntegrationTestArgs{
 			).
 			Press(keys.Universal.CopyToClipboard)
 
-		t.ExpectToast(Equals("'branch-a' Copied to clipboard"))
+		t.ExpectToast(Equals("'branch-a' copied to clipboard"))
 
 		t.Views().Files().
 			Focus()

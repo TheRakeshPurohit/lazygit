@@ -6,14 +6,14 @@ import (
 )
 
 var FormPrompts = NewIntegrationTest(NewIntegrationTestArgs{
-	Description:  "Using a custom command reffering prompt responses by name",
+	Description:  "Using a custom command referring prompt responses by name",
 	ExtraCmdArgs: []string{},
 	Skip:         false,
 	SetupRepo: func(shell *Shell) {
 		shell.EmptyCommit("blah")
 	},
 	SetupConfig: func(cfg *config.AppConfig) {
-		cfg.UserConfig.CustomCommands = []config.CustomCommand{
+		cfg.GetUserConfig().CustomCommands = []config.CustomCommand{
 			{
 				Key:     "a",
 				Context: "files",

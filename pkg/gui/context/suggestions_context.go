@@ -14,10 +14,13 @@ type SuggestionsContext struct {
 }
 
 type SuggestionsContextState struct {
-	Suggestions  []*types.Suggestion
-	OnConfirm    func() error
-	OnClose      func() error
-	AsyncHandler *tasks.AsyncHandler
+	Suggestions        []*types.Suggestion
+	OnConfirm          func() error
+	OnClose            func() error
+	OnDeleteSuggestion func() error
+	AsyncHandler       *tasks.AsyncHandler
+
+	AllowEditSuggestion bool
 
 	// FindSuggestions will take a string that the user has typed into a prompt
 	// and return a slice of suggestions which match that string.
@@ -63,20 +66,11 @@ func NewSuggestionsContext(
 	}
 }
 
-func (self *SuggestionsContext) GetSelectedItemId() string {
-	item := self.GetSelected()
-	if item == nil {
-		return ""
-	}
-
-	return item.Value
-}
-
 func (self *SuggestionsContext) SetSuggestions(suggestions []*types.Suggestion) {
 	self.State.Suggestions = suggestions
 	self.SetSelection(0)
 	self.c.ResetViewOrigin(self.GetView())
-	_ = self.HandleRender()
+	self.HandleRender()
 }
 
 func (self *SuggestionsContext) RefreshSuggestions() {

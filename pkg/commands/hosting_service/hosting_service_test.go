@@ -211,6 +211,19 @@ func TestGetPullRequestURL(t *testing.T) {
 			},
 		},
 		{
+			testName:  "Opens a link to new pull request on Azure DevOps Server (HTTP)",
+			from:      "feature/new",
+			remoteUrl: "https://mycompany.azuredevops.com/collection/myproject/_git/myrepo",
+			configServiceDomains: map[string]string{
+				// valid configuration for a azure devops server URL
+				"mycompany.azuredevops.com": "azuredevops:mycompany.azuredevops.com",
+			},
+			test: func(url string, err error) {
+				assert.NoError(t, err)
+				assert.Equal(t, "https://mycompany.azuredevops.com/collection/myproject/_git/myrepo/pullrequestcreate?sourceRef=feature%2Fnew", url)
+			},
+		},
+		{
 			testName:  "Opens a link to new pull request on Bitbucket Server (SSH)",
 			from:      "feature/new",
 			remoteUrl: "ssh://git@mycompany.bitbucket.com/myproject/myrepo.git",
@@ -413,11 +426,10 @@ func TestGetPullRequestURL(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			tr := i18n.EnglishTranslationSet()
 			log := &fakes.FakeFieldLogger{}
-			hostingServiceMgr := NewHostingServiceMgr(log, &tr, s.remoteUrl, s.configServiceDomains)
+			hostingServiceMgr := NewHostingServiceMgr(log, tr, s.remoteUrl, s.configServiceDomains)
 			s.test(hostingServiceMgr.GetPullRequestURL(s.from, s.to))
 			log.AssertErrors(t, s.expectedLoggedErrors)
 		})

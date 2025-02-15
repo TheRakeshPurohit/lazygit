@@ -15,6 +15,8 @@ const (
 	DisplayAll FileTreeDisplayFilter = iota
 	DisplayStaged
 	DisplayUnstaged
+	DisplayTracked
+	DisplayUntracked
 	// this shows files with merge conflicts
 	DisplayConflicted
 )
@@ -30,6 +32,8 @@ type ITree[T any] interface {
 	IsCollapsed(path string) bool
 	ToggleCollapsed(path string)
 	CollapsedPaths() *CollapsedPaths
+	CollapseAll()
+	ExpandAll()
 }
 
 type IFileTree interface {
@@ -37,6 +41,7 @@ type IFileTree interface {
 
 	FilterFiles(test func(*models.File) bool) []*models.File
 	SetStatusFilter(filter FileTreeDisplayFilter)
+	ForceShowUntracked() bool
 	Get(index int) *FileNode
 	GetFile(path string) *models.File
 	GetAllItems() []*FileNode
@@ -82,11 +87,19 @@ func (self *FileTree) getFilesForDisplay() []*models.File {
 		return self.FilterFiles(func(file *models.File) bool { return file.HasStagedChanges })
 	case DisplayUnstaged:
 		return self.FilterFiles(func(file *models.File) bool { return file.HasUnstagedChanges })
+	case DisplayTracked:
+		return self.FilterFiles(func(file *models.File) bool { return file.Tracked })
+	case DisplayUntracked:
+		return self.FilterFiles(func(file *models.File) bool { return !file.Tracked })
 	case DisplayConflicted:
 		return self.FilterFiles(func(file *models.File) bool { return file.HasMergeConflicts })
 	default:
 		panic(fmt.Sprintf("Unexpected files display filter: %d", self.filter))
 	}
+}
+
+func (self *FileTree) ForceShowUntracked() bool {
+	return self.filter == DisplayUntracked
 }
 
 func (self *FileTree) FilterFiles(test func(*models.File) bool) []*models.File {
@@ -138,7 +151,8 @@ func (self *FileTree) GetAllItems() []*FileNode {
 }
 
 func (self *FileTree) Len() int {
-	return self.tree.Size(self.collapsedPaths) - 1 // ignoring root
+	// -1 because we're ignoring the root
+	return max(self.tree.Size(self.collapsedPaths)-1, 0)
 }
 
 func (self *FileTree) GetItem(index int) types.HasUrn {
@@ -165,6 +179,20 @@ func (self *FileTree) IsCollapsed(path string) bool {
 
 func (self *FileTree) ToggleCollapsed(path string) {
 	self.collapsedPaths.ToggleCollapsed(path)
+}
+
+func (self *FileTree) CollapseAll() {
+	dirPaths := lo.FilterMap(self.GetAllItems(), func(file *FileNode, index int) (string, bool) {
+		return file.Path, !file.IsFile()
+	})
+
+	for _, path := range dirPaths {
+		self.collapsedPaths.Collapse(path)
+	}
+}
+
+func (self *FileTree) ExpandAll() {
+	self.collapsedPaths.ExpandAll()
 }
 
 func (self *FileTree) Tree() *FileNode {

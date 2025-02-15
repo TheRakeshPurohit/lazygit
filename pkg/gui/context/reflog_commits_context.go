@@ -22,7 +22,7 @@ func NewReflogCommitsContext(c *ContextCommon) *ReflogCommitsContext {
 	viewModel := NewFilteredListViewModel(
 		func() []*models.Commit { return c.Model().FilteredReflogCommits },
 		func(commit *models.Commit) []string {
-			return []string{commit.ShortSha(), commit.Name}
+			return []string{commit.ShortHash(), commit.Name}
 		},
 	)
 
@@ -30,12 +30,12 @@ func NewReflogCommitsContext(c *ContextCommon) *ReflogCommitsContext {
 		return presentation.GetReflogCommitListDisplayStrings(
 			viewModel.GetItems(),
 			c.State().GetRepoState().GetScreenMode() != types.SCREEN_NORMAL,
-			c.Modes().CherryPicking.SelectedShaSet(),
+			c.Modes().CherryPicking.SelectedHashSet(),
 			c.Modes().Diffing.Ref,
 			time.Now(),
-			c.UserConfig.Gui.TimeFormat,
-			c.UserConfig.Gui.ShortTimeFormat,
-			c.UserConfig.Git.ParseEmoji,
+			c.UserConfig().Gui.TimeFormat,
+			c.UserConfig().Gui.ShortTimeFormat,
+			c.UserConfig().Git.ParseEmoji,
 		)
 	}
 
@@ -48,7 +48,7 @@ func NewReflogCommitsContext(c *ContextCommon) *ReflogCommitsContext {
 				Key:                        REFLOG_COMMITS_CONTEXT_KEY,
 				Kind:                       types.SIDE_CONTEXT,
 				Focusable:                  true,
-				NeedsRerenderOnWidthChange: true,
+				NeedsRerenderOnWidthChange: types.NEEDS_RERENDER_ON_WIDTH_CHANGE_WHEN_SCREEN_MODE_CHANGES,
 			})),
 			ListRenderer: ListRenderer{
 				list:              viewModel,
@@ -57,15 +57,6 @@ func NewReflogCommitsContext(c *ContextCommon) *ReflogCommitsContext {
 			c: c,
 		},
 	}
-}
-
-func (self *ReflogCommitsContext) GetSelectedItemId() string {
-	item := self.GetSelected()
-	if item == nil {
-		return ""
-	}
-
-	return item.ID()
 }
 
 func (self *ReflogCommitsContext) CanRebase() bool {
@@ -80,6 +71,11 @@ func (self *ReflogCommitsContext) GetSelectedRef() types.Ref {
 	return commit
 }
 
+func (self *ReflogCommitsContext) GetSelectedRefRangeForDiffFiles() *types.RefRange {
+	// It doesn't make much sense to show a range diff between two reflog entries.
+	return nil
+}
+
 func (self *ReflogCommitsContext) GetCommits() []*models.Commit {
 	return self.getModel()
 }
@@ -88,6 +84,10 @@ func (self *ReflogCommitsContext) GetDiffTerminals() []string {
 	itemId := self.GetSelectedItemId()
 
 	return []string{itemId}
+}
+
+func (self *ReflogCommitsContext) RefForAdjustingLineNumberInDiff() string {
+	return self.GetSelectedItemId()
 }
 
 func (self *ReflogCommitsContext) ShowBranchHeadsInSubCommits() bool {

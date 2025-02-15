@@ -71,7 +71,7 @@ var CherryPick = NewIntegrationTest(NewIntegrationTestArgs{
 				t.Wait(1000)
 				t.ExpectPopup().Alert().
 					Title(Equals("Cherry-pick")).
-					Content(Contains("Are you sure you want to cherry-pick the copied commits onto this branch?")).
+					Content(Contains("Are you sure you want to cherry-pick the 2 copied commit(s) onto this branch?")).
 					Confirm()
 			}).
 			TopLines(
@@ -81,11 +81,6 @@ var CherryPick = NewIntegrationTest(NewIntegrationTestArgs{
 				Contains("Integrate support for markdown in user posts"),
 				Contains("Fix bug in timezone conversion."),
 			).
-			Tap(func() {
-				// we need to manually exit out of cherry pick mode
-				t.Views().Information().Content(Contains("2 commits copied"))
-			}).
-			PressEscape().
 			Tap(func() {
 				t.Views().Information().Content(DoesNotContain("commits copied"))
 			})

@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -22,7 +23,7 @@ func NewSnakeHelper(c *HelperCommon) *SnakeHelper {
 func (self *SnakeHelper) StartGame() {
 	view := self.c.Views().Snake
 
-	game := snake.NewGame(view.Width(), view.Height(), self.renderSnakeGame, self.c.LogAction)
+	game := snake.NewGame(view.InnerWidth(), view.InnerHeight(), self.renderSnakeGame, self.c.LogAction)
 	self.game = game
 	game.Start()
 }
@@ -39,7 +40,7 @@ func (self *SnakeHelper) renderSnakeGame(cells [][]snake.CellType, alive bool) {
 	view := self.c.Views().Snake
 
 	if !alive {
-		_ = self.c.ErrorMsg(self.c.Tr.YouDied)
+		self.c.OnUIThread(func() error { return errors.New(self.c.Tr.YouDied) })
 		return
 	}
 

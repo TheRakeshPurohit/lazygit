@@ -1,6 +1,7 @@
 package custom_commands
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -74,7 +75,7 @@ func (self *HandlerCreator) call(customCommand config.CustomCommand) func() erro
 				f = func() error {
 					resolvedPrompt, err := self.resolver.resolvePrompt(&prompt, resolveTemplate)
 					if err != nil {
-						return self.c.Error(err)
+						return err
 					}
 					return self.inputPrompt(resolvedPrompt, wrappedF)
 				}
@@ -82,7 +83,7 @@ func (self *HandlerCreator) call(customCommand config.CustomCommand) func() erro
 				f = func() error {
 					resolvedPrompt, err := self.resolver.resolvePrompt(&prompt, resolveTemplate)
 					if err != nil {
-						return self.c.Error(err)
+						return err
 					}
 					return self.menuPrompt(resolvedPrompt, wrappedF)
 				}
@@ -90,7 +91,7 @@ func (self *HandlerCreator) call(customCommand config.CustomCommand) func() erro
 				f = func() error {
 					resolvedPrompt, err := self.resolver.resolvePrompt(&prompt, resolveTemplate)
 					if err != nil {
-						return self.c.Error(err)
+						return err
 					}
 					return self.menuPromptFromCommand(resolvedPrompt, wrappedF)
 				}
@@ -98,12 +99,12 @@ func (self *HandlerCreator) call(customCommand config.CustomCommand) func() erro
 				f = func() error {
 					resolvedPrompt, err := self.resolver.resolvePrompt(&prompt, resolveTemplate)
 					if err != nil {
-						return self.c.Error(err)
+						return err
 					}
 					return self.confirmPrompt(resolvedPrompt, g)
 				}
 			default:
-				return self.c.ErrorMsg("custom command prompt must have a type of 'input', 'menu', 'menuFromCommand', or 'confirm'")
+				return errors.New("custom command prompt must have a type of 'input', 'menu', 'menuFromCommand', or 'confirm'")
 			}
 		}
 
@@ -114,10 +115,10 @@ func (self *HandlerCreator) call(customCommand config.CustomCommand) func() erro
 func (self *HandlerCreator) inputPrompt(prompt *config.CustomCommandPrompt, wrappedF func(string) error) error {
 	findSuggestionsFn, err := self.generateFindSuggestionsFunc(prompt)
 	if err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
-	return self.c.Prompt(types.PromptOpts{
+	self.c.Prompt(types.PromptOpts{
 		Title:               prompt.Title,
 		InitialContent:      prompt.InitialValue,
 		FindSuggestionsFunc: findSuggestionsFn,
@@ -125,16 +126,16 @@ func (self *HandlerCreator) inputPrompt(prompt *config.CustomCommandPrompt, wrap
 			return wrappedF(str)
 		},
 	})
+
+	return nil
 }
 
 func (self *HandlerCreator) generateFindSuggestionsFunc(prompt *config.CustomCommandPrompt) (func(string) []*types.Suggestion, error) {
 	if prompt.Suggestions.Preset != "" && prompt.Suggestions.Command != "" {
 		return nil, fmt.Errorf(
-			fmt.Sprintf(
-				"Custom command prompt cannot have both a preset and a command for suggestions. Preset: '%s', Command: '%s'",
-				prompt.Suggestions.Preset,
-				prompt.Suggestions.Command,
-			),
+			"Custom command prompt cannot have both a preset and a command for suggestions. Preset: '%s', Command: '%s'",
+			prompt.Suggestions.Preset,
+			prompt.Suggestions.Command,
 		)
 	} else if prompt.Suggestions.Preset != "" {
 		return self.getPresetSuggestionsFn(prompt.Suggestions.Preset)
@@ -184,11 +185,13 @@ func (self *HandlerCreator) getPresetSuggestionsFn(preset string) (func(string) 
 }
 
 func (self *HandlerCreator) confirmPrompt(prompt *config.CustomCommandPrompt, handleConfirm func() error) error {
-	return self.c.Confirm(types.ConfirmOpts{
+	self.c.Confirm(types.ConfirmOpts{
 		Title:         prompt.Title,
 		Prompt:        prompt.Body,
 		HandleConfirm: handleConfirm,
 	})
+
+	return nil
 }
 
 func (self *HandlerCreator) menuPrompt(prompt *config.CustomCommandPrompt, wrappedF func(string) error) error {
@@ -208,13 +211,13 @@ func (self *HandlerCreator) menuPromptFromCommand(prompt *config.CustomCommandPr
 	// Run and save output
 	message, err := self.c.Git().Custom.RunWithOutput(prompt.Command)
 	if err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
 	// Need to make a menu out of what the cmd has displayed
 	candidates, err := self.menuGenerator.call(message, prompt.Filter, prompt.ValueFormat, prompt.LabelFormat)
 	if err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
 	menuItems := lo.Map(candidates, func(candidate *commandMenuItem, _ int) *types.MenuItem {
@@ -253,7 +256,7 @@ func (self *HandlerCreator) finalHandler(customCommand config.CustomCommand, ses
 	resolveTemplate := self.getResolveTemplateFn(form, promptResponses, sessionState)
 	cmdStr, err := resolveTemplate(customCommand.Command)
 	if err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
 	cmdObj := self.c.OS().Cmd.NewShell(cmdStr)
@@ -284,14 +287,22 @@ func (self *HandlerCreator) finalHandler(customCommand config.CustomCommand, ses
 				return self.mergeAndRebaseHelper.CheckForConflicts(err)
 			}
 
-			return self.c.Error(err)
+			return err
 		}
 
 		if customCommand.ShowOutput {
 			if strings.TrimSpace(output) == "" {
 				output = self.c.Tr.EmptyOutput
 			}
-			return self.c.Alert(cmdStr, output)
+
+			title := cmdStr
+			if customCommand.OutputTitle != "" {
+				title, err = resolveTemplate(customCommand.OutputTitle)
+				if err != nil {
+					return err
+				}
+			}
+			self.c.Alert(title, output)
 		}
 
 		return nil

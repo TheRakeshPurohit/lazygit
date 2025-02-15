@@ -60,10 +60,26 @@ func (self *GitCommandBuilder) Dir(path string) *GitCommandBuilder {
 	return self
 }
 
+func (self *GitCommandBuilder) DirIf(condition bool, path string) *GitCommandBuilder {
+	if condition {
+		return self.Dir(path)
+	}
+
+	return self
+}
+
 // Note, you may prefer to use the Dir method instead of this one
 func (self *GitCommandBuilder) Worktree(path string) *GitCommandBuilder {
 	// worktree arg comes before the command
 	self.args = append([]string{"--work-tree", path}, self.args...)
+
+	return self
+}
+
+func (self *GitCommandBuilder) WorktreePathIf(condition bool, path string) *GitCommandBuilder {
+	if condition {
+		return self.Worktree(path)
+	}
 
 	return self
 }

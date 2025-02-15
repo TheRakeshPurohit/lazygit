@@ -27,6 +27,19 @@ creates a commit with the appropriate subject line.
 Don't confuse this with the lowercase "f" command ("Fixup commit"); that one
 squashes the selected commit into its parent, this is not what we want here.
 
+## Creating amend commits
+
+There's a special type of fixup commit that uses "amend!" instead of "fixup!" in
+the commit message subject; in addition to fixing up the original commit with
+changes it allows you to also (or only) change the commit message of the
+original commit. The menu that appears when pressing shift-F has options for
+both of these; they bring up a commit message panel similar to when you reword a
+commit, but then create the "amend!" commit containing the new message. Note
+that in that panel you only type the new message as you want it to be
+eventually; lazygit then takes care of formatting the "amend!" commit
+appropriately for you (with the subject of your new message moving into the body
+of the "amend!" commit).
+
 ## Squashing fixup commits
 
 When you're ready to merge the branch and want to squash all these fixup commits
@@ -43,22 +56,10 @@ base commit in the Commits view automatically. From there, you can either press
 shift-F to create a fixup commit for it, or shift-A to amend your changes into
 the commit if you haven't published your branch yet.
 
-This command works in many cases, and when it does it almost feels like magic,
-but it's important to understand its limitations because it doesn't always work.
-The way it works is that it looks at the deleted lines of your current
-modifications, blames them to find out which commit those lines come from, and
-if they all come from the same commit, it selects it. So here are cases where it
-doesn't work:
-
-- Your current diff has only added lines, but no deleted lines. In this case
-  there's no way for lazygit to know which commit you want to add them to.
-- The deleted lines belong to multiple different commits. In this case you can
-  help lazygit by staging a set of files or hunks that all belong to the same
-  commit; if some changes are staged, the ctrl-f command works only on those.
-- The found commit is already on master; in this case, lazygit refuses to select
-  it, because it doesn't make sense to create fixups for it, let alone amend to
-  it.
-
-To sum it up: the command works great if you are changing code again that you
-changed or added earlier in the same branch. This is a common enough case to
-make the command useful.
+If you have many modifications in your working copy, it is a good idea to stage
+related changes that are meant to go into the same fixup commit; if no changes
+are staged, ctrl-f works on all unstaged modifications, and then it might show
+an error if it finds multiple different base commits. If you are interested in
+what the command does to do its magic, and how you can help it work better, you
+may want to read the [design document](dev/Find_Base_Commit_For_Fixup_Design.md)
+that describes this.

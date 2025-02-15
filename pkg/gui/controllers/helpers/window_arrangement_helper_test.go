@@ -122,6 +122,87 @@ func TestGetWindowDimensions(t *testing.T) {
 			`,
 		},
 		{
+			name: "expandFocusedSidePanel",
+			mutateArgs: func(args *WindowArrangementArgs) {
+				args.UserConfig.Gui.ExpandFocusedSidePanel = true
+			},
+			expected: `
+			╭status─────────────────╮╭main────────────────────────────────────────────╮
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭files──────────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭branches───────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭commits────────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭stash──────────────────╮│                                                │
+			│                       ││                                                │
+			╰───────────────────────╯╰────────────────────────────────────────────────╯
+			<options──────────────────────────────────────────────────────>A<B────────>
+			A: statusSpacer1
+			B: information
+			`,
+		},
+		{
+			name: "expandSidePanelWeight",
+			mutateArgs: func(args *WindowArrangementArgs) {
+				args.UserConfig.Gui.ExpandFocusedSidePanel = true
+				args.UserConfig.Gui.ExpandedSidePanelWeight = 4
+			},
+			expected: `
+			╭status─────────────────╮╭main────────────────────────────────────────────╮
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭files──────────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭branches───────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭commits────────────────╮│                                                │
+			│                       ││                                                │
+			│                       ││                                                │
+			╰───────────────────────╯│                                                │
+			╭stash──────────────────╮│                                                │
+			│                       ││                                                │
+			╰───────────────────────╯╰────────────────────────────────────────────────╯
+			<options──────────────────────────────────────────────────────>A<B────────>
+			A: statusSpacer1
+			B: information
+			`,
+		},
+		{
 			name: "half screen mode, enlargedSideViewLocation left",
 			mutateArgs: func(args *WindowArrangementArgs) {
 				args.Height = 20 // smaller height because we don't more here
@@ -341,7 +422,7 @@ func renderLayout(windows map[string]boxlayout.Dimensions) string {
 		return dimensionsA.X0 < dimensionsB.X0
 	})
 
-	// Uniquefy windows by dimensions (so perfectly overlapping windows are de-duped). This prevents getting 'fileshes' as a label where the files and branches windows overlap.
+	// Uniquify windows by dimensions (so perfectly overlapping windows are de-duped). This prevents getting 'fileshes' as a label where the files and branches windows overlap.
 	// branches windows overlap.
 	windowNames = lo.UniqBy(windowNames, func(windowName string) boxlayout.Dimensions {
 		return windows[windowName]

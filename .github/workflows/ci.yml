@@ -1,7 +1,7 @@
 name: Continuous Integration
 
 env:
-  GO_VERSION: 1.20
+  GO_VERSION: 1.22
 
 on:
   push:
@@ -28,18 +28,18 @@ jobs:
       GOFLAGS: -mod=vendor
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.20.x
+          go-version: 1.22.x
       - name: Test code
         # we're passing -short so that we skip the integration tests, which will be run in parallel below
         run: |
           mkdir -p /tmp/code_coverage
           go test ./... -short -cover -args "-test.gocoverdir=/tmp/code_coverage"
       - name: Upload code coverage artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-unit-${{ matrix.os }}-${{ github.run_id }}
           path: /tmp/code_coverage
@@ -61,11 +61,11 @@ jobs:
       GOFLAGS: -mod=vendor
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Restore Git cache
         if: matrix.git-version != 'latest'
         id: cache-git-restore
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: ~/git-${{matrix.git-version}}
           key: ${{runner.os}}-git-${{matrix.git-version}}
@@ -82,14 +82,14 @@ jobs:
         run: sudo make -C "$HOME/git-${{matrix.git-version}}" -j install
       - name: Save Git cache
         if: steps.cache-git-restore.outputs.cache-hit != 'true' && matrix.git-version != 'latest'
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4
         with:
           path: ~/git-${{matrix.git-version}}
           key: ${{runner.os}}-git-${{matrix.git-version}}
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.20.x
+          go-version: 1.22.x
       - name: Print git version
         run: git --version
       - name: Test code
@@ -100,7 +100,7 @@ jobs:
           mkdir -p /tmp/code_coverage
           ./scripts/run_integration_tests.sh
       - name: Upload code coverage artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-integration-${{ matrix.git-version }}-${{ github.run_id }}
           path: /tmp/code_coverage
@@ -111,11 +111,11 @@ jobs:
       GOARCH: amd64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.20.x
+          go-version: 1.22.x
       - name: Build linux binary
         run: |
           GOOS=linux go build
@@ -138,11 +138,11 @@ jobs:
       GOARCH: amd64
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.20.x
+          go-version: 1.22.x
       - name: Check Vendor Directory
         # ensure our vendor directory matches up with our go modules
         run: |
@@ -164,15 +164,15 @@ jobs:
       GOFLAGS: -mod=vendor
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.20.x
+          go-version: 1.22.x
       - name: Lint
-        uses: golangci/golangci-lint-action@v3.7.0
+        uses: golangci/golangci-lint-action@v6.1.0
         with:
-          version: latest
+          version: v1.60
       - name: errors
         run: golangci-lint run
         if: ${{ failure() }}
@@ -184,17 +184,23 @@ jobs:
         with:
           mode: exactly
           count: 1
-          labels: "ignore-for-release, feature, enhancement, bug, maintenance, docs, i18n"
+          labels: "ignore-for-release, feature, enhancement, bug, maintenance, docs, i18n, performance"
   upload-coverage:
     # List all jobs that produce coverage files
     needs: [unit-tests, integration-tests]
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.22.x
 
       - name: Download all coverage artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: /tmp/code_coverage
 
@@ -213,3 +219,22 @@ jobs:
           CODACY_PROJECT_TOKEN=${{ secrets.CODACY_PROJECT_TOKEN }} \
             bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
             --force-coverage-parser go -r coverage.out
+
+  check-for-fixups:
+    runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/master'
+    steps:
+      # See https://github.com/actions/checkout/issues/552#issuecomment-1167086216
+      - name: "PR commits"
+        run: echo "PR_FETCH_DEPTH=$(( ${{ github.event.pull_request.commits }} ))" >> "${GITHUB_ENV}"
+
+      - name: "Checkout PR branch and all PR commits"
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: ${{ env.PR_FETCH_DEPTH }}
+
+      - name: Check for fixups
+        run: |
+          ./scripts/check_for_fixups.sh ${{ github.event.pull_request.base.ref }}

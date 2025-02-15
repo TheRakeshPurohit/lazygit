@@ -41,7 +41,6 @@ func TestBranchGetCommitDifferences(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			instance := buildBranchCommands(commonDeps{runner: s.runner})
 			pushables, pullables := instance.GetCommitDifferences("HEAD", "@{u}")
@@ -63,15 +62,17 @@ func TestBranchNewBranch(t *testing.T) {
 
 func TestBranchDeleteBranch(t *testing.T) {
 	type scenario struct {
-		testName string
-		force    bool
-		runner   *oscommands.FakeCmdObjRunner
-		test     func(error)
+		testName    string
+		branchNames []string
+		force       bool
+		runner      *oscommands.FakeCmdObjRunner
+		test        func(error)
 	}
 
 	scenarios := []scenario{
 		{
 			"Delete a branch",
+			[]string{"test"},
 			false,
 			oscommands.NewFakeRunner(t).ExpectGitArgs([]string{"branch", "-d", "test"}, "", nil),
 			func(err error) {
@@ -79,9 +80,28 @@ func TestBranchDeleteBranch(t *testing.T) {
 			},
 		},
 		{
+			"Delete multiple branches",
+			[]string{"test1", "test2", "test3"},
+			false,
+			oscommands.NewFakeRunner(t).ExpectGitArgs([]string{"branch", "-d", "test1", "test2", "test3"}, "", nil),
+			func(err error) {
+				assert.NoError(t, err)
+			},
+		},
+		{
 			"Force delete a branch",
+			[]string{"test"},
 			true,
 			oscommands.NewFakeRunner(t).ExpectGitArgs([]string{"branch", "-D", "test"}, "", nil),
+			func(err error) {
+				assert.NoError(t, err)
+			},
+		},
+		{
+			"Force delete multiple branches",
+			[]string{"test1", "test2", "test3"},
+			true,
+			oscommands.NewFakeRunner(t).ExpectGitArgs([]string{"branch", "-D", "test1", "test2", "test3"}, "", nil),
 			func(err error) {
 				assert.NoError(t, err)
 			},
@@ -89,11 +109,10 @@ func TestBranchDeleteBranch(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			instance := buildBranchCommands(commonDeps{runner: s.runner})
 
-			s.test(instance.LocalDelete("test", s.force))
+			s.test(instance.LocalDelete(s.branchNames, s.force))
 			s.runner.CheckForMissingCalls()
 		})
 	}
@@ -128,6 +147,19 @@ func TestBranchMerge(t *testing.T) {
 			expected:   []string{"merge", "--no-edit", "--merging-args", "mybranch"},
 		},
 		{
+			testName: "multiple merging args",
+			userConfig: &config.UserConfig{
+				Git: config.GitConfig{
+					Merging: config.MergingConfig{
+						Args: "--arg1 --arg2", // it's up to the user what they put here
+					},
+				},
+			},
+			opts:       MergeOpts{},
+			branchName: "mybranch",
+			expected:   []string{"merge", "--no-edit", "--arg1", "--arg2", "mybranch"},
+		},
+		{
 			testName:   "fast forward only",
 			userConfig: &config.UserConfig{},
 			opts:       MergeOpts{FastForwardOnly: true},
@@ -137,7 +169,6 @@ func TestBranchMerge(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			runner := oscommands.NewFakeRunner(t).
 				ExpectGitArgs(s.expected, "", nil)
@@ -177,7 +208,6 @@ func TestBranchCheckout(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			instance := buildBranchCommands(commonDeps{runner: s.runner})
 			s.test(instance.Checkout("test", CheckoutOptions{Force: s.force}))
@@ -266,7 +296,6 @@ func TestBranchCurrentBranchInfo(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.testName, func(t *testing.T) {
 			instance := buildBranchCommands(commonDeps{runner: s.runner})
 			s.test(instance.CurrentBranchInfo())

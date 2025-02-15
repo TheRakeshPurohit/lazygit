@@ -30,9 +30,9 @@ func NewBranchesContext(c *ContextCommon) *BranchesContext {
 			c.State().GetItemOperation,
 			c.State().GetRepoState().GetScreenMode() != types.SCREEN_NORMAL,
 			c.Modes().Diffing.Ref,
-			c.Views().Branches.Width(),
+			c.Views().Branches.InnerWidth(),
 			c.Tr,
-			c.UserConfig,
+			c.UserConfig(),
 			c.Model().Worktrees,
 		)
 	}
@@ -46,7 +46,7 @@ func NewBranchesContext(c *ContextCommon) *BranchesContext {
 				Key:                        LOCAL_BRANCHES_CONTEXT_KEY,
 				Kind:                       types.SIDE_CONTEXT,
 				Focusable:                  true,
-				NeedsRerenderOnWidthChange: true,
+				NeedsRerenderOnWidthChange: types.NEEDS_RERENDER_ON_WIDTH_CHANGE_WHEN_WIDTH_CHANGES,
 			})),
 			ListRenderer: ListRenderer{
 				list:              viewModel,
@@ -57,15 +57,6 @@ func NewBranchesContext(c *ContextCommon) *BranchesContext {
 	}
 
 	return self
-}
-
-func (self *BranchesContext) GetSelectedItemId() string {
-	item := self.GetSelected()
-	if item == nil {
-		return ""
-	}
-
-	return item.ID()
 }
 
 func (self *BranchesContext) GetSelectedRef() types.Ref {
@@ -87,6 +78,14 @@ func (self *BranchesContext) GetDiffTerminals() []string {
 		return names
 	}
 	return nil
+}
+
+func (self *BranchesContext) RefForAdjustingLineNumberInDiff() string {
+	branch := self.GetSelected()
+	if branch != nil {
+		return branch.ID()
+	}
+	return ""
 }
 
 func (self *BranchesContext) ShowBranchHeadsInSubCommits() bool {

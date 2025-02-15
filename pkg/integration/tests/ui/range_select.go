@@ -14,6 +14,7 @@ import (
 // (sticky range, press 'v') -> no range
 // (sticky range, press 'escape') -> no range
 // (sticky range, press arrow) -> sticky range
+// (sticky range, press `<`/`>` or `,`/`.`) -> sticky range
 // (sticky range, press shift+arrow) -> nonsticky range
 // (nonsticky range, press 'v') -> no range
 // (nonsticky range, press 'escape') -> no range
@@ -49,7 +50,7 @@ var RangeSelect = NewIntegrationTest(NewIntegrationTestArgs{
 		shell.CreateFile("file1", fileContent)
 	},
 	Run: func(t *TestDriver, keys config.KeybindingConfig) {
-		assertRangeSelectBehaviour := func(v *ViewDriver) {
+		assertRangeSelectBehaviour := func(v *ViewDriver, otherView *ViewDriver, lineIdxOfFirstItem int) {
 			v.
 				SelectedLines(
 					Contains("line 1"),
@@ -138,23 +139,34 @@ var RangeSelect = NewIntegrationTest(NewIntegrationTestArgs{
 				SelectedLines(
 					Contains("line 8"),
 				).
+				// (sticky range, press '>') -> sticky range
 				Press(keys.Universal.ToggleRangeSelect).
-				SelectedLines(
-					Contains("line 8"),
-				).
-				SelectNextItem().
+				Press(keys.Universal.GotoBottom).
 				SelectedLines(
 					Contains("line 8"),
 					Contains("line 9"),
+					Contains("line 10"),
 				).
 				// (sticky range, press 'escape') -> no range
 				PressEscape().
 				SelectedLines(
-					Contains("line 9"),
+					Contains("line 10"),
+				)
+
+			// Click in view, press shift+arrow -> nonsticky range
+			otherView.Focus()
+			v.Click(1, lineIdxOfFirstItem).
+				SelectedLines(
+					Contains("line 1"),
+				).
+				Press(keys.Universal.RangeSelectDown).
+				SelectedLines(
+					Contains("line 1"),
+					Contains("line 2"),
 				)
 		}
 
-		assertRangeSelectBehaviour(t.Views().Commits().Focus())
+		assertRangeSelectBehaviour(t.Views().Commits().Focus(), t.Views().Branches(), 0)
 
 		t.Views().Files().
 			Focus().
@@ -163,6 +175,6 @@ var RangeSelect = NewIntegrationTest(NewIntegrationTestArgs{
 			).
 			PressEnter()
 
-		assertRangeSelectBehaviour(t.Views().Staging().IsFocused())
+		assertRangeSelectBehaviour(t.Views().Staging().IsFocused(), t.Views().Files(), 6)
 	},
 })

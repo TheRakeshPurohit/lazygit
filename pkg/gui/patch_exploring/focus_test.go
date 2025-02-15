@@ -62,7 +62,7 @@ func TestNewOrigin(t *testing.T) {
 			lastLineIdx:     199,
 			selectedLineIdx: 199,
 			selectMode:      LINE,
-			expected:        99,
+			expected:        100,
 		},
 		{
 			name:            "selection within scroll window",
@@ -122,7 +122,6 @@ func TestNewOrigin(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		s := s
 		t.Run(s.name, func(t *testing.T) {
 			assert.EqualValues(t, s.expected, calculateOrigin(s.origin, s.bufferHeight, s.numLines, s.firstLineIdx, s.lastLineIdx, s.selectedLineIdx, s.selectMode))
 		})

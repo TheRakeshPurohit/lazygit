@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -71,7 +72,7 @@ func (self *WorkingTreeHelper) FileForSubmodule(submodule *models.SubmoduleConfi
 }
 
 func (self *WorkingTreeHelper) OpenMergeTool() error {
-	return self.c.Confirm(types.ConfirmOpts{
+	self.c.Confirm(types.ConfirmOpts{
 		Title:  self.c.Tr.MergeToolTitle,
 		Prompt: self.c.Tr.MergeToolPrompt,
 		HandleConfirm: func() error {
@@ -81,11 +82,13 @@ func (self *WorkingTreeHelper) OpenMergeTool() error {
 			)
 		},
 	})
+
+	return nil
 }
 
 func (self *WorkingTreeHelper) HandleCommitPressWithMessage(initialMessage string) error {
-	return self.WithEnsureCommitableFiles(func() error {
-		return self.commitsHelper.OpenCommitMessagePanel(
+	return self.WithEnsureCommittableFiles(func() error {
+		self.commitsHelper.OpenCommitMessagePanel(
 			&OpenCommitMessagePanelOpts{
 				CommitIndex:      context.NoCommitIndex,
 				InitialMessage:   initialMessage,
@@ -96,6 +99,8 @@ func (self *WorkingTreeHelper) HandleCommitPressWithMessage(initialMessage strin
 				OnSwitchToEditor: self.switchFromCommitMessagePanelToEditor,
 			},
 		)
+
+		return nil
 	})
 }
 
@@ -126,7 +131,7 @@ func (self *WorkingTreeHelper) switchFromCommitMessagePanelToEditor(filepath str
 // HandleCommitEditorPress - handle when the user wants to commit changes via
 // their editor rather than via the popup panel
 func (self *WorkingTreeHelper) HandleCommitEditorPress() error {
-	return self.WithEnsureCommitableFiles(func() error {
+	return self.WithEnsureCommittableFiles(func() error {
 		self.c.LogAction(self.c.Tr.Actions.Commit)
 		return self.c.RunSubprocessAndRefresh(
 			self.c.Git().Commit.CommitEditorCmdObj(),
@@ -135,41 +140,45 @@ func (self *WorkingTreeHelper) HandleCommitEditorPress() error {
 }
 
 func (self *WorkingTreeHelper) HandleWIPCommitPress() error {
-	skipHookPrefix := self.c.UserConfig.Git.SkipHookPrefix
+	skipHookPrefix := self.c.UserConfig().Git.SkipHookPrefix
 	if skipHookPrefix == "" {
-		return self.c.ErrorMsg(self.c.Tr.SkipHookPrefixNotConfigured)
+		return errors.New(self.c.Tr.SkipHookPrefixNotConfigured)
 	}
 
 	return self.HandleCommitPressWithMessage(skipHookPrefix)
 }
 
 func (self *WorkingTreeHelper) HandleCommitPress() error {
-	message := self.c.Contexts().CommitMessage.GetPreservedMessage()
+	message := self.c.Contexts().CommitMessage.GetPreservedMessageAndLogError()
 
 	if message == "" {
 		commitPrefixConfig := self.commitPrefixConfigForRepo()
 		if commitPrefixConfig != nil {
 			prefixPattern := commitPrefixConfig.Pattern
 			prefixReplace := commitPrefixConfig.Replace
+			branchName := self.refHelper.GetCheckedOutRef().Name
 			rgx, err := regexp.Compile(prefixPattern)
 			if err != nil {
-				return self.c.ErrorMsg(fmt.Sprintf("%s: %s", self.c.Tr.CommitPrefixPatternError, err.Error()))
+				return fmt.Errorf("%s: %s", self.c.Tr.CommitPrefixPatternError, err.Error())
 			}
-			prefix := rgx.ReplaceAllString(self.refHelper.GetCheckedOutRef().Name, prefixReplace)
-			message = prefix
+
+			if rgx.MatchString(branchName) {
+				prefix := rgx.ReplaceAllString(branchName, prefixReplace)
+				message = prefix
+			}
 		}
 	}
 
 	return self.HandleCommitPressWithMessage(message)
 }
 
-func (self *WorkingTreeHelper) WithEnsureCommitableFiles(handler func() error) error {
+func (self *WorkingTreeHelper) WithEnsureCommittableFiles(handler func() error) error {
 	if err := self.prepareFilesForCommit(); err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
 	if len(self.c.Model().Files) == 0 {
-		return self.c.ErrorMsg(self.c.Tr.NoFilesStagedTitle)
+		return errors.New(self.c.Tr.NoFilesStagedTitle)
 	}
 
 	if !self.AnyStagedFiles() {
@@ -180,21 +189,23 @@ func (self *WorkingTreeHelper) WithEnsureCommitableFiles(handler func() error) e
 }
 
 func (self *WorkingTreeHelper) promptToStageAllAndRetry(retry func() error) error {
-	return self.c.Confirm(types.ConfirmOpts{
+	self.c.Confirm(types.ConfirmOpts{
 		Title:  self.c.Tr.NoFilesStagedTitle,
 		Prompt: self.c.Tr.NoFilesStagedPrompt,
 		HandleConfirm: func() error {
 			self.c.LogAction(self.c.Tr.Actions.StageAllFiles)
 			if err := self.c.Git().WorkingTree.StageAll(); err != nil {
-				return self.c.Error(err)
+				return err
 			}
 			if err := self.syncRefresh(); err != nil {
-				return self.c.Error(err)
+				return err
 			}
 
 			return retry()
 		},
 	})
+
+	return nil
 }
 
 // for when you need to refetch files before continuing an action. Runs synchronously.
@@ -204,7 +215,7 @@ func (self *WorkingTreeHelper) syncRefresh() error {
 
 func (self *WorkingTreeHelper) prepareFilesForCommit() error {
 	noStagedFiles := !self.AnyStagedFiles()
-	if noStagedFiles && self.c.UserConfig.Gui.SkipNoStagedFilesWarning {
+	if noStagedFiles && self.c.UserConfig().Gui.SkipNoStagedFilesWarning {
 		self.c.LogAction(self.c.Tr.Actions.StageAllFiles)
 		err := self.c.Git().WorkingTree.StageAll()
 		if err != nil {
@@ -218,10 +229,10 @@ func (self *WorkingTreeHelper) prepareFilesForCommit() error {
 }
 
 func (self *WorkingTreeHelper) commitPrefixConfigForRepo() *config.CommitPrefixConfig {
-	cfg, ok := self.c.UserConfig.Git.CommitPrefixes[self.c.Git().RepoPaths.RepoName()]
-	if !ok {
-		return nil
+	cfg, ok := self.c.UserConfig().Git.CommitPrefixes[self.c.Git().RepoPaths.RepoName()]
+	if ok {
+		return &cfg
 	}
 
-	return &cfg
+	return self.c.UserConfig().Git.CommitPrefix
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,15 +29,17 @@ type cliArgs struct {
 	RepoPath           string
 	FilterPath         string
 	GitArg             string
-	PrintVersionInfo   bool
-	Debug              bool
-	TailLogs           bool
-	PrintDefaultConfig bool
-	PrintConfigDir     bool
 	UseConfigDir       string
 	WorkTree           string
 	GitDir             string
 	CustomConfigFile   string
+	ScreenMode         string
+	PrintVersionInfo   bool
+	Debug              bool
+	TailLogs           bool
+	Profile            bool
+	PrintDefaultConfig bool
+	PrintConfigDir     bool
 }
 
 type BuildInfo struct {
@@ -133,6 +137,12 @@ func Start(buildInfo *BuildInfo, integrationTest integrationTypes.IntegrationTes
 
 	if integrationTest != nil {
 		integrationTest.SetupConfig(appConfig)
+
+		// Preserve the changes that the test setup just made to the config, so
+		// they don't get lost when we reload the config while running the test
+		// (which happens when switching between repos, going in and out of
+		// submodules, etc).
+		appConfig.SaveGlobalUserConfig()
 	}
 
 	common, err := NewCommon(appConfig)
@@ -145,9 +155,17 @@ func Start(buildInfo *BuildInfo, integrationTest integrationTypes.IntegrationTes
 		return
 	}
 
+	if cliArgs.Profile {
+		go func() {
+			if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+				log.Fatal(err)
+			}
+		}()
+	}
+
 	parsedGitArg := parseGitArg(cliArgs.GitArg)
 
-	Run(appConfig, common, appTypes.NewStartArgs(cliArgs.FilterPath, parsedGitArg, integrationTest))
+	Run(appConfig, common, appTypes.NewStartArgs(cliArgs.FilterPath, parsedGitArg, cliArgs.ScreenMode, integrationTest))
 }
 
 func parseCliArgsAndEnvVars() *cliArgs {
@@ -171,6 +189,9 @@ func parseCliArgsAndEnvVars() *cliArgs {
 	tailLogs := false
 	flaggy.Bool(&tailLogs, "l", "logs", "Tail lazygit logs (intended to be used when `lazygit --debug` is called in a separate terminal tab)")
 
+	profile := false
+	flaggy.Bool(&profile, "", "profile", "Start the profiler and serve it on http port 6060. See CONTRIBUTING.md for more info.")
+
 	printDefaultConfig := false
 	flaggy.Bool(&printDefaultConfig, "c", "config", "Print the default config")
 
@@ -189,6 +210,9 @@ func parseCliArgsAndEnvVars() *cliArgs {
 	customConfigFile := ""
 	flaggy.String(&customConfigFile, "ucf", "use-config-file", "Comma separated list to custom config file(s)")
 
+	screenMode := ""
+	flaggy.String(&screenMode, "sm", "screen-mode", "The initial screen-mode, which determines the size of the focused panel. Valid options: 'normal' (default), 'half', 'full'")
+
 	flaggy.Parse()
 
 	if os.Getenv("DEBUG") == "TRUE" {
@@ -202,12 +226,14 @@ func parseCliArgsAndEnvVars() *cliArgs {
 		PrintVersionInfo:   printVersionInfo,
 		Debug:              debug,
 		TailLogs:           tailLogs,
+		Profile:            profile,
 		PrintDefaultConfig: printDefaultConfig,
 		PrintConfigDir:     printConfigDir,
 		UseConfigDir:       useConfigDir,
 		WorkTree:           workTree,
 		GitDir:             gitDir,
 		CustomConfigFile:   customConfigFile,
+		ScreenMode:         screenMode,
 	}
 }
 
@@ -263,7 +289,7 @@ func mergeBuildInfo(buildInfo *BuildInfo) {
 		buildInfo.Commit = revision.Value
 		// if lazygit was built from source we'll show the version as the
 		// abbreviated commit hash
-		buildInfo.Version = utils.ShortSha(revision.Value)
+		buildInfo.Version = utils.ShortHash(revision.Value)
 	}
 
 	// if version hasn't been set we assume that neither has the date

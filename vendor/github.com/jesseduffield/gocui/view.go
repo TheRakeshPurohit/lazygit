@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/go-errors/errors"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -25,10 +24,6 @@ const (
 	LEFT   = 4 // view is overlapping at left edge
 	RIGHT  = 8 // view is overlapping at right edge
 )
-
-// ErrInvalidPoint is returned when client passed invalid coordinates of a cell.
-// Most likely client has passed negative coordinates of a cell.
-var ErrInvalidPoint = errors.New("invalid point")
 
 // A View is a window. It maintains its own internal buffer and cursor
 // position.
@@ -56,6 +51,13 @@ type View struct {
 	// tained is true if the viewLines must be updated
 	tainted bool
 
+	// the last position that the mouse was hovering over; nil if the mouse is outside of
+	// this view, or not hovering over a cell
+	lastHoverPosition *pos
+
+	// the location of the hyperlink that the mouse is currently hovering over; nil if none
+	hoveredHyperlink *SearchPosition
+
 	// internal representation of the view's buffer. We will keep viewLines around
 	// from a previous render until we explicitly set them to nil, allowing us to
 	// render the same content twice without flicker. Wherever we want to render
@@ -63,6 +65,11 @@ type View struct {
 	// rendering new content or if the view is resized) we should set tainted to
 	// true and viewLines to nil
 	viewLines []viewLine
+
+	// If the last character written was a newline, we don't write it but
+	// instead set pendingNewline to true. If more text is written, we write the
+	// newline then. This is to avoid having an extra blank at the end of the view.
+	pendingNewline bool
 
 	// writeMutex protects locks the write process
 	writeMutex sync.Mutex
@@ -81,6 +88,11 @@ type View struct {
 	// foreground colors of the selected line, when it is highlighted.
 	SelBgColor, SelFgColor Attribute
 
+	// InactiveViewSelBgColor is used to configure the background color of the
+	// selected line, when it is highlighted but the view doesn't have the
+	// focus.
+	InactiveViewSelBgColor Attribute
+
 	// If Editable is true, keystrokes will be added to the view's internal
 	// buffer at the cursor position.
 	Editable bool
@@ -96,6 +108,9 @@ type View struct {
 	// If Highlight is true, Sel{Bg,Fg}Colors will be used
 	// for the line under the cursor position.
 	Highlight bool
+	// If HighlightInactive is true, InavtiveViewSel{Bg,Fg}Colors will be used
+	// instead of Sel{Bg,Fg}Colors for highlighting selected lines.
+	HighlightInactive bool
 
 	// If Frame is true, a border will be drawn around the view.
 	Frame bool
@@ -172,6 +187,18 @@ type View struct {
 
 	// if true, the user can scroll all the way past the last item until it appears at the top of the view
 	CanScrollPastBottom bool
+
+	// if true, the view will automatically recognize https: URLs in the content written to it and render
+	// them as hyperlinks
+	AutoRenderHyperLinks bool
+
+	// if true, the view will underline hyperlinks only when the cursor is on
+	// them; otherwise, they will always be underlined
+	UnderlineHyperLinksOnlyOnHover bool
+}
+
+type pos struct {
+	x, y int
 }
 
 // call this in the event of a view resize, or if you want to render new content
@@ -180,11 +207,13 @@ type View struct {
 func (v *View) clearViewLines() {
 	v.tainted = true
 	v.viewLines = nil
+	v.clearHover()
 }
 
 type searcher struct {
 	searchString       string
-	searchPositions    []cellPos
+	searchPositions    []SearchPosition
+	modelSearchResults []SearchPosition
 	currentSearchIndex int
 	onSelectItem       func(int, int, int) error
 }
@@ -228,7 +257,7 @@ func (v *View) SelectSearchResult(index int) error {
 		index = itemCount - 1
 	}
 
-	y := v.searcher.searchPositions[index].y
+	y := v.searcher.searchPositions[index].Y
 
 	v.FocusPoint(v.ox, y)
 	if v.searcher.onSelectItem != nil {
@@ -242,9 +271,22 @@ func (v *View) GetSearchStatus() (int, int) {
 	return v.searcher.currentSearchIndex, len(v.searcher.searchPositions)
 }
 
-func (v *View) Search(str string) error {
+// modelSearchResults is optional; pass nil to search the view. If non-nil,
+// these positions will be used for highlighting search results. Even in this
+// case the view will still be searched on a per-line basis, so that the caller
+// doesn't have to make assumptions where in the rendered line the search result
+// is. The XStart and XEnd values in the modelSearchResults are only used in
+// case the search string is not found in the given line, which can happen if
+// the view renders an abbreviated version of some of the model data.
+//
+// Mind the difference between nil and empty slice: nil means we're not
+// searching the model, empty slice means we *are* searching the model but we
+// didn't find any matches.
+func (v *View) UpdateSearchResults(str string, modelSearchResults []SearchPosition) {
 	v.writeMutex.Lock()
-	v.searcher.search(str)
+	defer v.writeMutex.Unlock()
+
+	v.searcher.search(str, modelSearchResults)
 	v.updateSearchPositions()
 
 	if len(v.searcher.searchPositions) > 0 {
@@ -253,18 +295,23 @@ func (v *View) Search(str string) error {
 		adjustedY := v.oy + v.cy
 		adjustedX := v.ox + v.cx
 		for i, pos := range v.searcher.searchPositions {
-			if pos.y > adjustedY || (pos.y == adjustedY && pos.x > adjustedX) {
+			if pos.Y > adjustedY || (pos.Y == adjustedY && pos.XStart > adjustedX) {
 				currentIndex = i
 				break
 			}
 		}
 		v.searcher.currentSearchIndex = currentIndex
-		v.writeMutex.Unlock()
-		return v.SelectSearchResult(currentIndex)
-	} else {
-		v.writeMutex.Unlock()
-		return v.searcher.onSelectItem(-1, -1, 0)
 	}
+}
+
+func (v *View) Search(str string, modelSearchResults []SearchPosition) error {
+	v.UpdateSearchResults(str, modelSearchResults)
+
+	if len(v.searcher.searchPositions) > 0 {
+		return v.SelectSearchResult(v.searcher.currentSearchIndex)
+	}
+
+	return v.searcher.onSelectItem(-1, -1, 0)
 }
 
 func (v *View) ClearSearch() {
@@ -280,14 +327,9 @@ func (v *View) FocusPoint(cx int, cy int) {
 	if cy < 0 || cy > lineCount {
 		return
 	}
-	_, height := v.Size()
+	height := v.InnerHeight()
 
-	ly := height - 1
-	if ly < 0 {
-		ly = 0
-	}
-
-	v.oy = calculateNewOrigin(cy, v.oy, lineCount, ly)
+	v.oy = calculateNewOrigin(cy, v.oy, lineCount, height)
 	v.cx = cx
 	v.cy = cy - v.oy
 }
@@ -301,16 +343,16 @@ func (v *View) CancelRangeSelect() {
 }
 
 func calculateNewOrigin(selectedLine int, oldOrigin int, lineCount int, viewHeight int) int {
-	if viewHeight > lineCount {
+	if viewHeight >= lineCount {
 		return 0
-	} else if selectedLine < oldOrigin || selectedLine > oldOrigin+viewHeight {
+	} else if selectedLine < oldOrigin || selectedLine >= oldOrigin+viewHeight {
 		// If the selected line is outside the visible area, scroll the view so
 		// that the selected line is in the middle.
 		newOrigin := selectedLine - viewHeight/2
 
 		// However, take care not to overflow if the total line count is less
 		// than the view height.
-		maxOrigin := lineCount - viewHeight - 1
+		maxOrigin := lineCount - viewHeight
 		if newOrigin > maxOrigin {
 			newOrigin = maxOrigin
 		}
@@ -324,21 +366,23 @@ func calculateNewOrigin(selectedLine int, oldOrigin int, lineCount int, viewHeig
 	return oldOrigin
 }
 
-func (s *searcher) search(str string) {
+func (s *searcher) search(str string, modelSearchResults []SearchPosition) {
 	s.searchString = str
-	s.searchPositions = []cellPos{}
+	s.searchPositions = []SearchPosition{}
+	s.modelSearchResults = modelSearchResults
 	s.currentSearchIndex = 0
 }
 
 func (s *searcher) clearSearch() {
 	s.searchString = ""
-	s.searchPositions = []cellPos{}
+	s.searchPositions = []SearchPosition{}
 	s.currentSearchIndex = 0
 }
 
-type cellPos struct {
-	x int
-	y int
+type SearchPosition struct {
+	XStart int
+	XEnd   int
+	Y      int
 }
 
 type viewLine struct {
@@ -349,6 +393,7 @@ type viewLine struct {
 type cell struct {
 	chr              rune
 	bgColor, fgColor Attribute
+	hyperlink        string
 }
 
 type lineType []cell
@@ -362,8 +407,8 @@ func (l lineType) String() string {
 	return str
 }
 
-// newView returns a new View object.
-func newView(name string, x0, y0, x1, y1 int, mode OutputMode) *View {
+// NewView returns a new View object.
+func NewView(name string, x0, y0, x1, y1 int, mode OutputMode) *View {
 	v := &View{
 		name:              name,
 		x0:                x0,
@@ -383,6 +428,7 @@ func newView(name string, x0, y0, x1, y1 int, mode OutputMode) *View {
 
 	v.FgColor, v.BgColor = ColorDefault, ColorDefault
 	v.SelFgColor, v.SelBgColor = ColorDefault, ColorDefault
+	v.InactiveViewSelBgColor = ColorDefault
 	v.TitleColor, v.FrameColor = ColorDefault, ColorDefault
 	return v
 }
@@ -392,22 +438,32 @@ func (v *View) Dimensions() (int, int, int, int) {
 	return v.x0, v.y0, v.x1, v.y1
 }
 
-// Size returns the number of visible columns and rows in the View.
+// Size returns the number of visible columns and rows in the View, including
+// the frame if any
 func (v *View) Size() (x, y int) {
 	return v.Width(), v.Height()
 }
 
+// InnerSize returns the number of usable columns and rows in the View, excluding
+// the frame if any
+func (v *View) InnerSize() (x, y int) {
+	return v.InnerWidth(), v.InnerHeight()
+}
+
 func (v *View) Width() int {
-	return v.x1 - v.x0 - 1
+	return v.x1 - v.x0 + 1
 }
 
 func (v *View) Height() int {
-	return v.y1 - v.y0 - 1
+	return v.y1 - v.y0 + 1
 }
 
-// if a view has a frame, that leaves less space for its writeable area
+// The writeable area of the view is always two less then the view's size,
+// because if it has a frame, we need to subtract that, but if it doesn't, the
+// view is made 1 larger on all sides. I'd like to clean this up at some point,
+// but for now we live with this weirdness.
 func (v *View) InnerWidth() int {
-	innerWidth := v.Width() - v.frameOffset()
+	innerWidth := v.Width() - 2
 	if innerWidth < 0 {
 		return 0
 	}
@@ -416,20 +472,12 @@ func (v *View) InnerWidth() int {
 }
 
 func (v *View) InnerHeight() int {
-	innerHeight := v.Height() - v.frameOffset()
+	innerHeight := v.Height() - 2
 	if innerHeight < 0 {
 		return 0
 	}
 
 	return innerHeight
-}
-
-func (v *View) frameOffset() int {
-	if v.Frame {
-		return 1
-	} else {
-		return 0
-	}
 }
 
 // Name returns the name of the view.
@@ -440,10 +488,10 @@ func (v *View) Name() string {
 // setRune sets a rune at the given point relative to the view. It applies the
 // specified colors, taking into account if the cell must be highlighted. Also,
 // it checks if the position is valid.
-func (v *View) setRune(x, y int, ch rune, fgColor, bgColor Attribute) error {
+func (v *View) setRune(x, y int, ch rune, fgColor, bgColor Attribute) {
 	maxX, maxY := v.Size()
 	if x < 0 || x >= maxX || y < 0 || y >= maxY {
-		return ErrInvalidPoint
+		return
 	}
 
 	if v.Mask != 0 {
@@ -451,42 +499,40 @@ func (v *View) setRune(x, y int, ch rune, fgColor, bgColor Attribute) error {
 		bgColor = v.BgColor
 		ch = v.Mask
 	} else if v.Highlight {
-		var (
-			ry, rcy int
-			err     error
-		)
-
-		_, ry, err = v.realPosition(x, y)
-		if err != nil {
-			return err
-		}
-		_, rrcy, err := v.realPosition(v.cx, v.cy)
-		// if error is not nil, then the cursor is out of bounds, which is fine
-		if err == nil {
-			rcy = rrcy
-		}
-
-		rangeSelectStart := rcy
-		rangeSelectEnd := rcy
+		rangeSelectStart := v.cy
+		rangeSelectEnd := v.cy
 		if v.rangeSelectStartY != -1 {
-			_, realRangeSelectStart, err := v.realPosition(0, v.rangeSelectStartY-v.oy)
-			if err != nil {
-				return err
-			}
-
-			rangeSelectStart = min(realRangeSelectStart, rcy)
-			rangeSelectEnd = max(realRangeSelectStart, rcy)
+			relativeRangeSelectStart := v.rangeSelectStartY - v.oy
+			rangeSelectStart = min(relativeRangeSelectStart, v.cy)
+			rangeSelectEnd = max(relativeRangeSelectStart, v.cy)
 		}
 
-		if ry >= rangeSelectStart && ry <= rangeSelectEnd {
+		if y >= rangeSelectStart && y <= rangeSelectEnd {
 			// this ensures we use the bright variant of a colour upon highlight
 			fgColorComponent := fgColor & ^AttrAll
 			if fgColorComponent >= AttrIsValidColor && fgColorComponent < AttrIsValidColor+8 {
 				fgColor += 8
 			}
 			fgColor = fgColor | AttrBold
-			bgColor = bgColor | v.SelBgColor
+			if v.HighlightInactive {
+				bgColor = bgColor | v.InactiveViewSelBgColor
+			} else {
+				bgColor = bgColor | v.SelBgColor
+			}
 		}
+	}
+
+	if matched, selected := v.isPatternMatchedRune(x, y); matched {
+		fgColor = ColorBlack
+		if selected {
+			bgColor = ColorCyan
+		} else {
+			bgColor = ColorYellow
+		}
+	}
+
+	if v.isHoveredHyperlink(x, y) {
+		fgColor |= AttrUnderline
 	}
 
 	// Don't display NUL characters
@@ -495,8 +541,6 @@ func (v *View) setRune(x, y int, ch rune, fgColor, bgColor Attribute) error {
 	}
 
 	tcellSetCell(v.x0+x+1, v.y0+y+1, ch, fgColor, bgColor, v.outMode)
-
-	return nil
 }
 
 func min(a, b int) int {
@@ -515,18 +559,17 @@ func max(a, b int) int {
 
 // SetCursor sets the cursor position of the view at the given point,
 // relative to the view. It checks if the position is valid.
-func (v *View) SetCursor(x, y int) error {
-	maxX, maxY := v.Size()
+func (v *View) SetCursor(x, y int) {
+	maxX, maxY := v.InnerSize()
 	if x < 0 || x >= maxX || y < 0 || y >= maxY {
-		return nil
+		return
 	}
 	v.cx = x
 	v.cy = y
-	return nil
 }
 
 func (v *View) SetCursorX(x int) {
-	maxX, _ := v.Size()
+	maxX := v.InnerWidth()
 	if x < 0 || x >= maxX {
 		return
 	}
@@ -534,7 +577,7 @@ func (v *View) SetCursorX(x int) {
 }
 
 func (v *View) SetCursorY(y int) {
-	_, maxY := v.Size()
+	maxY := v.InnerHeight()
 	if y < 0 || y >= maxY {
 		return
 	}
@@ -559,29 +602,30 @@ func (v *View) CursorY() int {
 // it is linked with the origin point of view. It can be used to
 // implement Horizontal and Vertical scrolling with just incrementing
 // or decrementing ox and oy.
-func (v *View) SetOrigin(x, y int) error {
-	if x < 0 || y < 0 {
-		return ErrInvalidPoint
-	}
-	v.ox = x
-	v.oy = y
-	return nil
-}
-
-func (v *View) SetOriginX(x int) error {
+func (v *View) SetOrigin(x, y int) {
 	if x < 0 {
-		return ErrInvalidPoint
+		x = 0
 	}
+	if y < 0 {
+		y = 0
+	}
+
 	v.ox = x
-	return nil
+	v.oy = y
 }
 
-func (v *View) SetOriginY(y int) error {
+func (v *View) SetOriginX(x int) {
+	if x < 0 {
+		x = 0
+	}
+	v.ox = x
+}
+
+func (v *View) SetOriginY(y int) {
 	if y < 0 {
-		return ErrInvalidPoint
+		y = 0
 	}
 	v.oy = y
-	return nil
 }
 
 // Origin returns the origin position of the view.
@@ -599,13 +643,19 @@ func (v *View) OriginY() int {
 
 // SetWritePos sets the write position of the view's internal buffer.
 // So the next Write call would write directly to the specified position.
-func (v *View) SetWritePos(x, y int) error {
-	if x < 0 || y < 0 {
-		return ErrInvalidPoint
+func (v *View) SetWritePos(x, y int) {
+	if x < 0 {
+		x = 0
 	}
+	if y < 0 {
+		y = 0
+	}
+
 	v.wx = x
 	v.wy = y
-	return nil
+
+	// Changing the write position makes a pending newline obsolete
+	v.pendingNewline = false
 }
 
 // WritePos returns the current write position of the view's internal buffer.
@@ -615,14 +665,17 @@ func (v *View) WritePos() (x, y int) {
 
 // SetReadPos sets the read position of the view's internal buffer.
 // So the next Read call would read from the specified position.
-func (v *View) SetReadPos(x, y int) error {
-	if x < 0 || y < 0 {
-		return ErrInvalidPoint
+func (v *View) SetReadPos(x, y int) {
+	if x < 0 {
+		x = 0
 	}
+	if y < 0 {
+		y = 0
+	}
+
 	v.readBuffer = nil
 	v.rx = x
 	v.ry = y
-	return nil
 }
 
 // ReadPos returns the current read position of the view's internal buffer.
@@ -646,7 +699,7 @@ func (v *View) makeWriteable(x, y int) {
 			v.lines = append(v.lines, nil)
 		}
 	}
-	// cell `x` must not be index-able (that's why `<`)
+	// cell `x` need not be index-able (that's why `<`)
 	// append should be used by `lines[y]` user if he wants to write beyond `x`
 	for len(v.lines[y]) < x {
 		if cap(v.lines[y]) > len(v.lines[y]) {
@@ -682,14 +735,6 @@ func (v *View) writeCells(x, y int, cells []cell) {
 	v.lines[y] = line[:newLen]
 }
 
-// readCell gets cell at specified location (x, y)
-func (v *View) readCell(x, y int) (cell, bool) {
-	if y < 0 || y >= len(v.lines) || x < 0 || x >= len(v.lines[y]) {
-		return cell{}, false
-	}
-	return v.lines[y][x], true
-}
-
 // Write appends a byte slice into the view's internal buffer. Because
 // View implements the io.Writer interface, it can be passed as parameter
 // of functions like fmt.Fprintf, fmt.Fprintln, io.Copy, etc. Clear must
@@ -713,45 +758,69 @@ func (v *View) WriteRunes(p []rune) {
 // writeRunes copies slice of runes into internal lines buffer.
 func (v *View) writeRunes(p []rune) {
 	v.tainted = true
+	v.clearHover()
 
 	// Fill with empty cells, if writing outside current view buffer
 	v.makeWriteable(v.wx, v.wy)
 
-	for _, r := range p {
+	finishLine := func() {
+		v.autoRenderHyperlinksInCurrentLine()
+		if v.wx >= len(v.lines[v.wy]) {
+			v.writeCells(v.wx, v.wy, []cell{{
+				chr:     0,
+				fgColor: 0,
+				bgColor: 0,
+			}})
+		}
+	}
+
+	advanceToNextLine := func() {
+		v.wx = 0
+		v.wy++
+		if v.wy >= len(v.lines) {
+			v.lines = append(v.lines, nil)
+		}
+	}
+
+	if v.pendingNewline {
+		advanceToNextLine()
+		v.pendingNewline = false
+	}
+
+	until := len(p)
+	if !v.Editable && until > 0 && p[until-1] == '\n' {
+		v.pendingNewline = true
+		until--
+	}
+
+	for _, r := range p[:until] {
 		switch r {
 		case '\n':
-			if c, ok := v.readCell(v.wx+1, v.wy); !ok || c.chr == 0 {
-				v.writeCells(v.wx, v.wy, []cell{{
-					chr:     0,
-					fgColor: 0,
-					bgColor: 0,
-				}})
-			}
-			v.wx = 0
-			v.wy++
-			if v.wy >= len(v.lines) {
-				v.lines = append(v.lines, nil)
-			}
+			finishLine()
+			advanceToNextLine()
 		case '\r':
-			if c, ok := v.readCell(v.wx, v.wy); !ok || c.chr == 0 {
-				v.writeCells(v.wx, v.wy, []cell{{
-					chr:     0,
-					fgColor: 0,
-					bgColor: 0,
-				}})
-			}
+			finishLine()
 			v.wx = 0
 		default:
-			moveCursor, cells := v.parseInput(r, v.wx, v.wy)
+			truncateLine, cells := v.parseInput(r, v.wx, v.wy)
 			if cells == nil {
 				continue
 			}
 			v.writeCells(v.wx, v.wy, cells)
-			if moveCursor {
+			if truncateLine {
+				length := v.wx + len(cells)
+				v.lines[v.wy] = v.lines[v.wy][:length]
+			} else {
 				v.wx += len(cells)
 			}
 		}
 	}
+
+	if v.pendingNewline {
+		finishLine()
+	}
+
+	v.updateSearchPositions()
 }
 
 // exported functions use the mutex. Non-exported functions are for internal use
@@ -764,12 +833,67 @@ func (v *View) writeString(s string) {
 	v.writeRunes([]rune(s))
 }
 
+func findSubstring(line []cell, substringToFind []rune) int {
+	for i := 0; i < len(line)-len(substringToFind); i++ {
+		for j := 0; j < len(substringToFind); j++ {
+			if line[i+j].chr != substringToFind[j] {
+				break
+			}
+			if j == len(substringToFind)-1 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func (v *View) autoRenderHyperlinksInCurrentLine() {
+	if !v.AutoRenderHyperLinks {
+		return
+	}
+
+	// We need a heuristic to find the end of a hyperlink. Searching for the
+	// first character that is not a valid URI character is not quite good
+	// enough, because in markdown it's common to have a hyperlink followed by a
+	// ')', so we want to stop there. Hopefully URLs containing ')' are uncommon
+	// enough that this is not a problem.
+	lineEndCharacters := map[rune]bool{
+		'\000': true,
+		' ':    true,
+		'\n':   true,
+		'>':    true,
+		'"':    true,
+		')':    true,
+	}
+	line := v.lines[v.wy]
+	start := 0
+	for {
+		linkStart := findSubstring(line[start:], []rune("https://"))
+		if linkStart == -1 {
+			break
+		}
+		linkStart += start
+		link := ""
+		linkEnd := linkStart
+		for ; linkEnd < len(line); linkEnd++ {
+			if _, ok := lineEndCharacters[line[linkEnd].chr]; ok {
+				break
+			}
+			link += string(line[linkEnd].chr)
+		}
+		for i := linkStart; i < linkEnd; i++ {
+			v.lines[v.wy][i].hyperlink = link
+		}
+		start = linkEnd
+	}
+}
+
 // parseInput parses char by char the input written to the View. It returns nil
 // while processing ESC sequences. Otherwise, it returns a cell slice that
 // contains the processed data.
-func (v *View) parseInput(ch rune, x int, y int) (bool, []cell) {
+func (v *View) parseInput(ch rune, x int, _ int) (bool, []cell) {
 	cells := []cell{}
-	moveCursor := true
+	truncateLine := false
 
 	isEscape, err := v.ei.parseOne(ch)
 	if err != nil {
@@ -788,15 +912,15 @@ func (v *View) parseInput(ch rune, x int, y int) (bool, []cell) {
 			// fill rest of line
 			v.ei.instructionRead()
 			cx := 0
-			for _, cell := range v.lines[v.wy] {
+			for _, cell := range v.lines[v.wy][0:v.wx] {
 				cx += runewidth.RuneWidth(cell.chr)
 			}
 			repeatCount = v.InnerWidth() - cx
 			ch = ' '
-			moveCursor = false
+			truncateLine = true
 		} else if isEscape {
 			// do not output anything
-			return moveCursor, nil
+			return truncateLine, nil
 		} else if ch == '\t' {
 			// fill tab-sized space
 			const tabStop = 4
@@ -804,16 +928,17 @@ func (v *View) parseInput(ch rune, x int, y int) (bool, []cell) {
 			repeatCount = tabStop - (x % tabStop)
 		}
 		c := cell{
-			fgColor: v.ei.curFgColor,
-			bgColor: v.ei.curBgColor,
-			chr:     ch,
+			fgColor:   v.ei.curFgColor,
+			bgColor:   v.ei.curBgColor,
+			hyperlink: v.ei.hyperlink,
+			chr:       ch,
 		}
 		for i := 0; i < repeatCount; i++ {
 			cells = append(cells, c)
 		}
 	}
 
-	return moveCursor, cells
+	return truncateLine, cells
 }
 
 // Read reads data into p from the current reading position set by SetReadPos.
@@ -922,16 +1047,8 @@ func (v *View) FlushStaleCells() {
 func (v *View) rewind() {
 	v.ei.reset()
 
-	if err := v.SetReadPos(0, 0); err != nil {
-		// SetReadPos returns error only if x and y are negative
-		// we are passing 0, 0, thus no error should occur.
-		panic(err)
-	}
-	if err := v.SetWritePos(0, 0); err != nil {
-		// SetWritePos returns error only if x and y are negative
-		// we are passing 0, 0, thus no error should occur.
-		panic(err)
-	}
+	v.SetReadPos(0, 0)
+	v.SetWritePos(0, 0)
 }
 
 func containsUpcaseChar(str string) bool {
@@ -957,8 +1074,11 @@ func (v *View) updateSearchPositions() {
 			normalizedSearchStr = strings.ToLower(v.searcher.searchString)
 		}
 
-		v.searcher.searchPositions = []cellPos{}
-		for y, line := range v.lines {
+		v.searcher.searchPositions = []SearchPosition{}
+
+		searchPositionsForLine := func(line []cell, y int) []SearchPosition {
+			var result []SearchPosition
+			searchStringWidth := runewidth.StringWidth(v.searcher.searchString)
 			x := 0
 			for startIdx, c := range line {
 				found := true
@@ -975,9 +1095,48 @@ func (v *View) updateSearchPositions() {
 					offset += 1
 				}
 				if found {
-					v.searcher.searchPositions = append(v.searcher.searchPositions, cellPos{x: x, y: y})
+					result = append(result, SearchPosition{XStart: x, XEnd: x + searchStringWidth, Y: y})
 				}
 				x += runewidth.RuneWidth(c.chr)
+			}
+			return result
+		}
+
+		if v.searcher.modelSearchResults != nil {
+			for _, result := range v.searcher.modelSearchResults {
+				// This code only works when v.Wrap is false.
+
+				if result.Y >= len(v.lines) {
+					break
+				}
+
+				// If a view line exists for this line index:
+				if v.lines[result.Y] != nil {
+					// search this view line for the search string
+					positions := searchPositionsForLine(v.lines[result.Y], result.Y)
+					if len(positions) > 0 {
+						// If we found any occurrences, add them
+						v.searcher.searchPositions = append(v.searcher.searchPositions, positions...)
+					} else {
+						// Otherwise, the search string was found in the model
+						// but not in the view line; this can happen if the view
+						// renders only truncated versions of the model strings.
+						// In this case, add one search position with what the
+						// model search function returned.
+						v.searcher.searchPositions = append(v.searcher.searchPositions, result)
+					}
+				} else {
+					// We don't have a view line for this line index. Add a
+					// searchPosition anyway, just for the sake of being able to
+					// show the "n of m" search status. The X positions don't
+					// matter in this case.
+					v.searcher.searchPositions = append(v.searcher.searchPositions, SearchPosition{XStart: -1, XEnd: -1, Y: result.Y})
+				}
+			}
+		} else {
+			v.refreshViewLinesIfNeeded()
+			for y, line := range v.viewLines {
+				v.searcher.searchPositions = append(v.searcher.searchPositions, searchPositionsForLine(line.line, y)...)
 			}
 		}
 	}
@@ -989,53 +1148,26 @@ func (v *View) IsTainted() bool {
 }
 
 // draw re-draws the view's contents.
-func (v *View) draw() error {
+func (v *View) draw() {
 	v.writeMutex.Lock()
 	defer v.writeMutex.Unlock()
 
 	if !v.Visible {
-		return nil
+		return
 	}
 
 	v.clearRunes()
 
-	v.updateSearchPositions()
-	maxX, maxY := v.Size()
+	maxX, maxY := v.InnerSize()
 
 	if v.Wrap {
 		if maxX == 0 {
-			return nil
+			return
 		}
 		v.ox = 0
 	}
-	if v.tainted {
-		lineIdx := 0
-		lines := v.lines
-		if v.HasLoader {
-			lines = v.loaderLines()
-		}
-		for i, line := range lines {
-			wrap := 0
-			if v.Wrap {
-				wrap = maxX
-			}
 
-			ls := lineWrap(line, wrap)
-			for j := range ls {
-				vline := viewLine{linesX: j, linesY: i, line: ls[j]}
-
-				if lineIdx > len(v.viewLines)-1 {
-					v.viewLines = append(v.viewLines, vline)
-				} else {
-					v.viewLines[lineIdx] = vline
-				}
-				lineIdx++
-			}
-		}
-		if !v.HasLoader {
-			v.tainted = false
-		}
-	}
+	v.refreshViewLinesIfNeeded()
 
 	visibleViewLinesHeight := v.viewLineLengthIgnoringTrailingBlankLines()
 	if v.Autoscroll && visibleViewLinesHeight > maxY {
@@ -1043,7 +1175,7 @@ func (v *View) draw() error {
 	}
 
 	if len(v.viewLines) == 0 {
-		return nil
+		return
 	}
 
 	start := v.oy
@@ -1103,17 +1235,11 @@ func (v *View) draw() error {
 			if bgColor == ColorDefault {
 				bgColor = v.BgColor
 			}
-			if matched, selected := v.isPatternMatchedRune(x, y); matched {
-				if selected {
-					bgColor = ColorCyan
-				} else {
-					bgColor = ColorYellow
-				}
+			if c.hyperlink != "" && !v.UnderlineHyperLinksOnlyOnHover {
+				fgColor |= AttrUnderline
 			}
 
-			if err := v.setRune(x, y, c.chr, fgColor, bgColor); err != nil {
-				return err
-			}
+			v.setRune(x, y, c.chr, fgColor, bgColor)
 
 			// Not sure why the previous code was here but it caused problems
 			// when typing wide characters in an editor
@@ -1121,7 +1247,38 @@ func (v *View) draw() error {
 			cellIdx++
 		}
 	}
-	return nil
+}
+
+func (v *View) refreshViewLinesIfNeeded() {
+	if v.tainted {
+		maxX := v.InnerWidth()
+		lineIdx := 0
+		lines := v.lines
+		if v.HasLoader {
+			lines = v.loaderLines()
+		}
+		for i, line := range lines {
+			wrap := 0
+			if v.Wrap {
+				wrap = maxX
+			}
+
+			ls := lineWrap(line, wrap)
+			for j := range ls {
+				vline := viewLine{linesX: j, linesY: i, line: ls[j]}
+
+				if lineIdx > len(v.viewLines)-1 {
+					v.viewLines = append(v.viewLines, vline)
+				} else {
+					v.viewLines[lineIdx] = vline
+				}
+				lineIdx++
+			}
+		}
+		if !v.HasLoader {
+			v.tainted = false
+		}
+	}
 }
 
 // if autoscroll is enabled but we only have a single row of cells shown to the
@@ -1137,29 +1294,37 @@ func (v *View) viewLineLengthIgnoringTrailingBlankLines() int {
 }
 
 func (v *View) isPatternMatchedRune(x, y int) (bool, bool) {
-	searchStringWidth := runewidth.StringWidth(v.searcher.searchString)
 	for i, pos := range v.searcher.searchPositions {
 		adjustedY := y + v.oy
 		adjustedX := x + v.ox
-		if adjustedY == pos.y && adjustedX >= pos.x && adjustedX < pos.x+searchStringWidth {
+		if adjustedY == pos.Y && adjustedX >= pos.XStart && adjustedX < pos.XEnd {
 			return true, i == v.searcher.currentSearchIndex
 		}
 	}
 	return false, false
 }
 
+func (v *View) isHoveredHyperlink(x, y int) bool {
+	if v.UnderlineHyperLinksOnlyOnHover && v.hoveredHyperlink != nil {
+		adjustedY := y + v.oy
+		adjustedX := x + v.ox
+		return adjustedY == v.hoveredHyperlink.Y && adjustedX >= v.hoveredHyperlink.XStart && adjustedX < v.hoveredHyperlink.XEnd
+	}
+	return false
+}
+
 // realPosition returns the position in the internal buffer corresponding to the
 // point (x, y) of the view.
-func (v *View) realPosition(vx, vy int) (x, y int, err error) {
+func (v *View) realPosition(vx, vy int) (x, y int, ok bool) {
 	vx = v.ox + vx
 	vy = v.oy + vy
 
 	if vx < 0 || vy < 0 {
-		return 0, 0, ErrInvalidPoint
+		return 0, 0, false
 	}
 
 	if len(v.viewLines) == 0 {
-		return vx, vy, nil
+		return vx, vy, true
 	}
 
 	if vy < len(v.viewLines) {
@@ -1172,12 +1337,12 @@ func (v *View) realPosition(vx, vy int) (x, y int, err error) {
 		y = vline.linesY + vy - len(v.viewLines) + 1
 	}
 
-	return x, y, nil
+	return x, y, true
 }
 
 // clearRunes erases all the cells in the view.
 func (v *View) clearRunes() {
-	maxX, maxY := v.Size()
+	maxX, maxY := v.InnerSize()
 	for x := 0; x < maxX; x++ {
 		for y := 0; y < maxY; y++ {
 			tcellSetCell(v.x0+x+1, v.y0+y+1, ' ', v.FgColor, v.BgColor, v.outMode)
@@ -1212,6 +1377,8 @@ func (v *View) ViewBufferLines() []string {
 	v.writeMutex.Lock()
 	defer v.writeMutex.Unlock()
 
+	v.refreshViewLinesIfNeeded()
+
 	lines := make([]string, len(v.viewLines))
 	for i, l := range v.viewLines {
 		str := lineType(l.line).String()
@@ -1228,6 +1395,10 @@ func (v *View) LinesHeight() int {
 
 // ViewLinesHeight is the count of view lines (i.e. lines including wrapping)
 func (v *View) ViewLinesHeight() int {
+	v.writeMutex.Lock()
+	defer v.writeMutex.Unlock()
+
+	v.refreshViewLinesIfNeeded()
 	return len(v.viewLines)
 }
 
@@ -1244,29 +1415,29 @@ func (v *View) ViewBuffer() string {
 
 // Line returns a string with the line of the view's internal buffer
 // at the position corresponding to the point (x, y).
-func (v *View) Line(y int) (string, error) {
-	_, y, err := v.realPosition(0, y)
-	if err != nil {
-		return "", err
+func (v *View) Line(y int) (string, bool) {
+	_, y, ok := v.realPosition(0, y)
+	if !ok {
+		return "", false
 	}
 
 	if y < 0 || y >= len(v.lines) {
-		return "", ErrInvalidPoint
+		return "", false
 	}
 
-	return lineType(v.lines[y]).String(), nil
+	return lineType(v.lines[y]).String(), true
 }
 
 // Word returns a string with the word of the view's internal buffer
 // at the position corresponding to the point (x, y).
-func (v *View) Word(x, y int) (string, error) {
-	x, y, err := v.realPosition(x, y)
-	if err != nil {
-		return "", err
+func (v *View) Word(x, y int) (string, bool) {
+	x, y, ok := v.realPosition(x, y)
+	if !ok {
+		return "", false
 	}
 
 	if x < 0 || y < 0 || y >= len(v.lines) || x >= len(v.lines[y]) {
-		return "", ErrInvalidPoint
+		return "", false
 	}
 
 	str := lineType(v.lines[y]).String()
@@ -1283,7 +1454,7 @@ func (v *View) Word(x, y int) (string, error) {
 	} else {
 		nr = nr + x
 	}
-	return string(str[nl:nr]), nil
+	return str[nl:nr], true
 }
 
 // indexFunc allows to split lines by words taking into account spaces
@@ -1294,10 +1465,9 @@ func indexFunc(r rune) bool {
 
 // SetHighlight toggles highlighting of separate lines, for custom lists
 // or multiple selection in views.
-func (v *View) SetHighlight(y int, on bool) error {
+func (v *View) SetHighlight(y int, on bool) {
 	if y < 0 || y >= len(v.lines) {
-		err := ErrInvalidPoint
-		return err
+		return
 	}
 
 	line := v.lines[y]
@@ -1314,7 +1484,7 @@ func (v *View) SetHighlight(y int, on bool) error {
 	}
 	v.tainted = true
 	v.lines[y] = cells
-	return nil
+	v.clearHover()
 }
 
 func lineWrap(line []cell, columns int) [][]cell {
@@ -1348,18 +1518,20 @@ func lineWrap(line []cell, columns int) [][]cell {
 				lines = append(lines, line[offset:i])
 				offset = i
 				n = rw
-			} else if lastWhitespaceIndex != -1 && lastWhitespaceIndex+1 != i {
+			} else if lastWhitespaceIndex != -1 {
 				// if there is a space in the line and the line is not breaking at a space/hyphen
 				if line[lastWhitespaceIndex].chr == '-' {
 					// if break occurs at hyphen, we'll retain the hyphen
 					lines = append(lines, line[offset:lastWhitespaceIndex+1])
-					offset = lastWhitespaceIndex + 1
-					n = i - offset
 				} else {
 					// if break occurs at space, we'll omit the space
 					lines = append(lines, line[offset:lastWhitespaceIndex])
-					offset = lastWhitespaceIndex + 1
-					n = i - offset + 1
+				}
+				// Either way, continue *after* the break
+				offset = lastWhitespaceIndex + 1
+				n = 0
+				for _, c := range line[offset : i+1] {
+					n += runewidth.RuneWidth(c.chr)
 				}
 			} else {
 				// in this case we're breaking mid-word
@@ -1497,8 +1669,8 @@ func (v *View) RenderTextArea() {
 	newViewCursorX, newOriginX := updatedCursorAndOrigin(prevOriginX, width, cursorX)
 	newViewCursorY, newOriginY := updatedCursorAndOrigin(prevOriginY, height, cursorY)
 
-	_ = v.SetCursor(newViewCursorX, newViewCursorY)
-	_ = v.SetOrigin(newOriginX, newOriginY)
+	v.SetCursor(newViewCursorX, newViewCursorY)
+	v.SetOrigin(newOriginX, newOriginY)
 }
 
 func updatedCursorAndOrigin(prevOrigin int, size int, cursor int) (int, int) {
@@ -1525,8 +1697,23 @@ func (v *View) ClearTextArea() {
 	defer v.writeMutex.Unlock()
 
 	v.TextArea.Clear()
-	_ = v.SetOrigin(0, 0)
-	_ = v.SetCursor(0, 0)
+	v.SetOrigin(0, 0)
+	v.SetCursor(0, 0)
+}
+
+func (v *View) overwriteLines(y int, content string) {
+	// break by newline, then for each line, write it, then add that erase command
+	v.wx = 0
+	v.wy = y
+	v.clearViewLines()
+
+	lines := strings.Replace(content, "\n", "\x1b[K\n", -1)
+	// If the last line doesn't end with a linefeed, add the erase command at
+	// the end too
+	if !strings.HasSuffix(lines, "\n") {
+		lines += "\x1b[K"
+	}
+	v.writeString(lines)
 }
 
 // only call this function if you don't care where v.wx and v.wy end up
@@ -1534,12 +1721,30 @@ func (v *View) OverwriteLines(y int, content string) {
 	v.writeMutex.Lock()
 	defer v.writeMutex.Unlock()
 
-	// break by newline, then for each line, write it, then add that erase command
-	v.wx = 0
-	v.wy = y
+	v.overwriteLines(y, content)
+}
 
-	lines := strings.Replace(content, "\n", "\x1b[K\n", -1)
-	v.writeString(lines)
+// only call this function if you don't care where v.wx and v.wy end up
+func (v *View) OverwriteLinesAndClearEverythingElse(y int, content string) {
+	v.writeMutex.Lock()
+	defer v.writeMutex.Unlock()
+
+	v.overwriteLines(y, content)
+
+	for i := 0; i < y; i += 1 {
+		v.lines[i] = nil
+	}
+
+	for i := v.wy + 1; i < len(v.lines); i += 1 {
+		v.lines[i] = nil
+	}
+}
+
+func (v *View) SetContentLineCount(lineCount int) {
+	if lineCount > 0 {
+		v.makeWriteable(0, lineCount-1)
+	}
+	v.lines = v.lines[:lineCount]
 }
 
 func (v *View) ScrollUp(amount int) {
@@ -1547,8 +1752,12 @@ func (v *View) ScrollUp(amount int) {
 		amount = v.oy
 	}
 
-	v.oy -= amount
-	v.cy += amount
+	if amount != 0 {
+		v.oy -= amount
+		v.cy += amount
+
+		v.clearHover()
+	}
 }
 
 // ensures we don't scroll past the end of the view's content
@@ -1557,6 +1766,8 @@ func (v *View) ScrollDown(amount int) {
 	if adjustedAmount > 0 {
 		v.oy += adjustedAmount
 		v.cy -= adjustedAmount
+
+		v.clearHover()
 	}
 }
 
@@ -1565,19 +1776,25 @@ func (v *View) ScrollLeft(amount int) {
 	if newOx < 0 {
 		newOx = 0
 	}
-	v.ox = newOx
+	if newOx != v.ox {
+		v.ox = newOx
+
+		v.clearHover()
+	}
 }
 
 // not applying any limits to this
 func (v *View) ScrollRight(amount int) {
 	v.ox += amount
+
+	v.clearHover()
 }
 
 func (v *View) adjustDownwardScrollAmount(scrollHeight int) int {
 	_, oy := v.Origin()
 	y := oy
 	if !v.CanScrollPastBottom {
-		_, sy := v.Size()
+		sy := v.InnerHeight()
 		y += sy
 	}
 	scrollableLines := v.ViewLinesHeight() - y
@@ -1643,4 +1860,50 @@ func containsColoredTextInLine(fgColorStr string, text string, line []cell) bool
 	}
 
 	return strings.Contains(currentMatch, text)
+}
+
+func (v *View) onMouseMove(x int, y int) {
+	if v.Editable || !v.UnderlineHyperLinksOnlyOnHover {
+		return
+	}
+
+	// newCx and newCy are relative to the view port, i.e. to the visible area of the view
+	newCx := x - v.x0 - 1
+	newCy := y - v.y0 - 1
+	// newX and newY are relative to the view's content, independent of its scroll position
+	newX := newCx + v.ox
+	newY := newCy + v.oy
+
+	if newY >= 0 && newY <= len(v.viewLines)-1 && newX >= 0 && newX <= len(v.viewLines[newY].line)-1 {
+		if v.lastHoverPosition == nil || v.lastHoverPosition.x != newX || v.lastHoverPosition.y != newY {
+			v.hoveredHyperlink = v.findHyperlinkAt(newX, newY)
+		}
+		v.lastHoverPosition = &pos{x: newX, y: newY}
+	} else {
+		v.lastHoverPosition = nil
+		v.hoveredHyperlink = nil
+	}
+}
+
+func (v *View) findHyperlinkAt(x, y int) *SearchPosition {
+	linkStr := v.viewLines[y].line[x].hyperlink
+	if linkStr == "" {
+		return nil
+	}
+
+	xStart := x
+	for xStart > 0 && v.viewLines[y].line[xStart-1].hyperlink == linkStr {
+		xStart--
+	}
+	xEnd := x + 1
+	for xEnd < len(v.viewLines[y].line) && v.viewLines[y].line[xEnd].hyperlink == linkStr {
+		xEnd++
+	}
+
+	return &SearchPosition{XStart: xStart, XEnd: xEnd, Y: y}
+}
+
+func (v *View) clearHover() {
+	v.hoveredHyperlink = nil
+	v.lastHoverPosition = nil
 }

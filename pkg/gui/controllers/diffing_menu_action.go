@@ -17,7 +17,6 @@ func (self *DiffingMenuAction) Call() error {
 
 	menuItems := []*types.MenuItem{}
 	for _, name := range names {
-		name := name
 		menuItems = append(menuItems, []*types.MenuItem{
 			{
 				Label: fmt.Sprintf("%s %s", self.c.Tr.Diff, name),
@@ -34,7 +33,7 @@ func (self *DiffingMenuAction) Call() error {
 		{
 			Label: self.c.Tr.EnterRefToDiff,
 			OnPress: func() error {
-				return self.c.Prompt(types.PromptOpts{
+				self.c.Prompt(types.PromptOpts{
 					Title:               self.c.Tr.EnterRefName,
 					FindSuggestionsFunc: self.c.Helpers().Suggestions.GetRefsSuggestionsFunc(),
 					HandleConfirm: func(response string) error {
@@ -42,6 +41,8 @@ func (self *DiffingMenuAction) Call() error {
 						return self.c.Refresh(types.RefreshOptions{Mode: types.ASYNC})
 					},
 				})
+
+				return nil
 			},
 		},
 	}...)

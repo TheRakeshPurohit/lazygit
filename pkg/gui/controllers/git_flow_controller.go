@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/jesseduffield/lazygit/pkg/commands/models"
@@ -25,6 +26,7 @@ func NewGitFlowController(
 			c,
 			c.Contexts().Branches,
 			c.Contexts().Branches.GetSelected,
+			c.Contexts().Branches.GetSelectedItems,
 		),
 		c: c,
 	}
@@ -45,14 +47,14 @@ func (self *GitFlowController) GetKeybindings(opts types.KeybindingsOpts) []*typ
 
 func (self *GitFlowController) handleCreateGitFlowMenu(branch *models.Branch) error {
 	if !self.c.Git().Flow.GitFlowEnabled() {
-		return self.c.ErrorMsg("You need to install git-flow and enable it in this repo to use git-flow features")
+		return errors.New("You need to install git-flow and enable it in this repo to use git-flow features")
 	}
 
 	startHandler := func(branchType string) func() error {
 		return func() error {
 			title := utils.ResolvePlaceholderString(self.c.Tr.NewGitFlowBranchPrompt, map[string]string{"branchType": branchType})
 
-			return self.c.Prompt(types.PromptOpts{
+			self.c.Prompt(types.PromptOpts{
 				Title: title,
 				HandleConfirm: func(name string) error {
 					self.c.LogAction(self.c.Tr.Actions.GitFlowStart)
@@ -61,6 +63,8 @@ func (self *GitFlowController) handleCreateGitFlowMenu(branch *models.Branch) er
 					)
 				},
 			})
+
+			return nil
 		}
 	}
 
@@ -102,7 +106,7 @@ func (self *GitFlowController) handleCreateGitFlowMenu(branch *models.Branch) er
 func (self *GitFlowController) gitFlowFinishBranch(branchName string) error {
 	cmdObj, err := self.c.Git().Flow.FinishCmdObj(branchName)
 	if err != nil {
-		return self.c.Error(err)
+		return err
 	}
 
 	self.c.LogAction(self.c.Tr.Actions.GitFlowFinish)

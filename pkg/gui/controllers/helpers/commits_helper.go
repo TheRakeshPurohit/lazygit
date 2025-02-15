@@ -1,10 +1,13 @@
 package helpers
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/jesseduffield/gocui"
+	"github.com/jesseduffield/lazygit/pkg/commands/git_commands"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 	"github.com/samber/lo"
 )
@@ -16,10 +19,11 @@ type ICommitsHelper interface {
 type CommitsHelper struct {
 	c *HelperCommon
 
-	getCommitSummary     func() string
-	setCommitSummary     func(string)
-	getCommitDescription func() string
-	setCommitDescription func(string)
+	getCommitSummary              func() string
+	setCommitSummary              func(string)
+	getCommitDescription          func() string
+	getUnwrappedCommitDescription func() string
+	setCommitDescription          func(string)
 }
 
 var _ ICommitsHelper = &CommitsHelper{}
@@ -29,14 +33,16 @@ func NewCommitsHelper(
 	getCommitSummary func() string,
 	setCommitSummary func(string),
 	getCommitDescription func() string,
+	getUnwrappedCommitDescription func() string,
 	setCommitDescription func(string),
 ) *CommitsHelper {
 	return &CommitsHelper{
-		c:                    c,
-		getCommitSummary:     getCommitSummary,
-		setCommitSummary:     setCommitSummary,
-		getCommitDescription: getCommitDescription,
-		setCommitDescription: setCommitDescription,
+		c:                             c,
+		getCommitSummary:              getCommitSummary,
+		setCommitSummary:              setCommitSummary,
+		getCommitDescription:          getCommitDescription,
+		getUnwrappedCommitDescription: getUnwrappedCommitDescription,
+		setCommitDescription:          setCommitDescription,
 	}
 }
 
@@ -53,18 +59,39 @@ func (self *CommitsHelper) SetMessageAndDescriptionInView(message string) {
 	self.c.Contexts().CommitMessage.RenderCommitLength()
 }
 
-func (self *CommitsHelper) JoinCommitMessageAndDescription() string {
-	if len(self.getCommitDescription()) == 0 {
+func (self *CommitsHelper) JoinCommitMessageAndUnwrappedDescription() string {
+	if len(self.getUnwrappedCommitDescription()) == 0 {
 		return self.getCommitSummary()
 	}
-	return self.getCommitSummary() + "\n" + self.getCommitDescription()
+	return self.getCommitSummary() + "\n" + self.getUnwrappedCommitDescription()
+}
+
+func TryRemoveHardLineBreaks(message string, autoWrapWidth int) string {
+	messageRunes := []rune(message)
+	lastHardLineStart := 0
+	for i, r := range messageRunes {
+		if r == '\n' {
+			// Try to make this a soft linebreak by turning it into a space, and
+			// checking whether it still wraps to the same result then.
+			messageRunes[i] = ' '
+
+			_, cursorMapping := gocui.AutoWrapContent(messageRunes[lastHardLineStart:], autoWrapWidth)
+
+			// Look at the cursorMapping to check whether auto-wrapping inserted
+			// a line break. If it did, there will be a cursorMapping entry with
+			// Orig pointing to the position after the inserted line break.
+			if len(cursorMapping) == 0 || cursorMapping[0].Orig != i-lastHardLineStart+1 {
+				// It didn't, so change it back to a newline
+				messageRunes[i] = '\n'
+			}
+			lastHardLineStart = i + 1
+		}
+	}
+
+	return string(messageRunes)
 }
 
 func (self *CommitsHelper) SwitchToEditor() error {
-	if !self.c.Contexts().CommitMessage.CanSwitchToEditor() {
-		return nil
-	}
-
 	message := lo.Ternary(len(self.getCommitDescription()) == 0,
 		self.getCommitSummary(),
 		self.getCommitSummary()+"\n\n"+self.getCommitDescription())
@@ -74,10 +101,7 @@ func (self *CommitsHelper) SwitchToEditor() error {
 		return err
 	}
 
-	err = self.CloseCommitMessagePanel()
-	if err != nil {
-		return err
-	}
+	self.CloseCommitMessagePanel()
 
 	return self.c.Contexts().CommitMessage.SwitchToEditor(filepath)
 }
@@ -89,7 +113,7 @@ func (self *CommitsHelper) UpdateCommitPanelView(message string) {
 	}
 
 	if self.c.Contexts().CommitMessage.GetPreserveMessage() {
-		preservedMessage := self.c.Contexts().CommitMessage.GetPreservedMessage()
+		preservedMessage := self.c.Contexts().CommitMessage.GetPreservedMessageAndLogError()
 		self.SetMessageAndDescriptionInView(preservedMessage)
 		return
 	}
@@ -107,11 +131,9 @@ type OpenCommitMessagePanelOpts struct {
 	InitialMessage   string
 }
 
-func (self *CommitsHelper) OpenCommitMessagePanel(opts *OpenCommitMessagePanelOpts) error {
+func (self *CommitsHelper) OpenCommitMessagePanel(opts *OpenCommitMessagePanelOpts) {
 	onConfirm := func(summary string, description string) error {
-		if err := self.CloseCommitMessagePanel(); err != nil {
-			return err
-		}
+		self.CloseCommitMessagePanel()
 
 		return opts.OnConfirm(summary, description)
 	}
@@ -121,19 +143,20 @@ func (self *CommitsHelper) OpenCommitMessagePanel(opts *OpenCommitMessagePanelOp
 		opts.SummaryTitle,
 		opts.DescriptionTitle,
 		opts.PreserveMessage,
+		opts.InitialMessage,
 		onConfirm,
 		opts.OnSwitchToEditor,
 	)
 
 	self.UpdateCommitPanelView(opts.InitialMessage)
 
-	return self.pushCommitMessageContexts()
+	self.c.Context().Push(self.c.Contexts().CommitMessage)
 }
 
 func (self *CommitsHelper) OnCommitSuccess() {
 	// if we have a preserved message we want to clear it on success
 	if self.c.Contexts().CommitMessage.GetPreserveMessage() {
-		self.c.Contexts().CommitMessage.SetPreservedMessage("")
+		self.c.Contexts().CommitMessage.SetPreservedMessageAndLogError("")
 	}
 }
 
@@ -141,7 +164,7 @@ func (self *CommitsHelper) HandleCommitConfirm() error {
 	summary, description := self.getCommitSummary(), self.getCommitDescription()
 
 	if summary == "" {
-		return self.c.ErrorMsg(self.c.Tr.CommitWithoutMessageErr)
+		return errors.New(self.c.Tr.CommitWithoutMessageErr)
 	}
 
 	err := self.c.Contexts().CommitMessage.OnConfirm(summary, description)
@@ -152,37 +175,100 @@ func (self *CommitsHelper) HandleCommitConfirm() error {
 	return nil
 }
 
-func (self *CommitsHelper) CloseCommitMessagePanel() error {
+func (self *CommitsHelper) CloseCommitMessagePanel() {
 	if self.c.Contexts().CommitMessage.GetPreserveMessage() {
-		message := self.JoinCommitMessageAndDescription()
-
-		self.c.Contexts().CommitMessage.SetPreservedMessage(message)
+		message := self.JoinCommitMessageAndUnwrappedDescription()
+		if message != self.c.Contexts().CommitMessage.GetInitialMessage() {
+			self.c.Contexts().CommitMessage.SetPreservedMessageAndLogError(message)
+		}
 	} else {
 		self.SetMessageAndDescriptionInView("")
 	}
 
 	self.c.Contexts().CommitMessage.SetHistoryMessage("")
 
-	return self.PopCommitMessageContexts()
+	self.c.Views().CommitMessage.Visible = false
+	self.c.Views().CommitDescription.Visible = false
+
+	self.c.Context().Pop()
 }
 
-func (self *CommitsHelper) PopCommitMessageContexts() error {
-	return self.c.RemoveContexts(self.commitMessageContexts())
-}
-
-func (self *CommitsHelper) pushCommitMessageContexts() error {
-	for _, context := range self.commitMessageContexts() {
-		if err := self.c.PushContext(context); err != nil {
-			return err
+func (self *CommitsHelper) OpenCommitMenu(suggestionFunc func(string) []*types.Suggestion) error {
+	var disabledReasonForOpenInEditor *types.DisabledReason
+	if !self.c.Contexts().CommitMessage.CanSwitchToEditor() {
+		disabledReasonForOpenInEditor = &types.DisabledReason{
+			Text: self.c.Tr.CommandDoesNotSupportOpeningInEditor,
 		}
 	}
+
+	menuItems := []*types.MenuItem{
+		{
+			Label: self.c.Tr.OpenInEditor,
+			OnPress: func() error {
+				return self.SwitchToEditor()
+			},
+			Key:            'e',
+			DisabledReason: disabledReasonForOpenInEditor,
+		},
+		{
+			Label: self.c.Tr.AddCoAuthor,
+			OnPress: func() error {
+				return self.addCoAuthor(suggestionFunc)
+			},
+			Key: 'c',
+		},
+		{
+			Label: self.c.Tr.PasteCommitMessageFromClipboard,
+			OnPress: func() error {
+				return self.pasteCommitMessageFromClipboard()
+			},
+			Key: 'p',
+		},
+	}
+	return self.c.Menu(types.CreateMenuOptions{
+		Title: self.c.Tr.CommitMenuTitle,
+		Items: menuItems,
+	})
+}
+
+func (self *CommitsHelper) addCoAuthor(suggestionFunc func(string) []*types.Suggestion) error {
+	self.c.Prompt(types.PromptOpts{
+		Title:               self.c.Tr.AddCoAuthorPromptTitle,
+		FindSuggestionsFunc: suggestionFunc,
+		HandleConfirm: func(value string) error {
+			commitDescription := self.getCommitDescription()
+			commitDescription = git_commands.AddCoAuthorToDescription(commitDescription, value)
+			self.setCommitDescription(commitDescription)
+			return nil
+		},
+	})
 
 	return nil
 }
 
-func (self *CommitsHelper) commitMessageContexts() []types.Context {
-	return []types.Context{
-		self.c.Contexts().CommitDescription,
-		self.c.Contexts().CommitMessage,
+func (self *CommitsHelper) pasteCommitMessageFromClipboard() error {
+	message, err := self.c.OS().PasteFromClipboard()
+	if err != nil {
+		return err
 	}
+	if message == "" {
+		return nil
+	}
+
+	if currentMessage := self.JoinCommitMessageAndUnwrappedDescription(); currentMessage == "" {
+		self.SetMessageAndDescriptionInView(message)
+		return nil
+	}
+
+	// Confirm before overwriting the commit message
+	self.c.Confirm(types.ConfirmOpts{
+		Title:  self.c.Tr.PasteCommitMessageFromClipboard,
+		Prompt: self.c.Tr.SurePasteCommitMessage,
+		HandleConfirm: func() error {
+			self.SetMessageAndDescriptionInView(message)
+			return nil
+		},
+	})
+
+	return nil
 }

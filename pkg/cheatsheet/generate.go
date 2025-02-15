@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/jesseduffield/generics/maps"
 	"github.com/jesseduffield/lazycore/pkg/utils"
@@ -52,7 +51,10 @@ func GetKeybindingsDir() string {
 }
 
 func generateAtDir(cheatsheetDir string) {
-	translationSetsByLang := i18n.GetTranslationSets()
+	translationSetsByLang, err := i18n.GetTranslationSets()
+	if err != nil {
+		log.Fatal(err)
+	}
 	mConfig := config.NewDummyAppConfig()
 
 	for lang := range translationSetsByLang {
@@ -61,6 +63,11 @@ func generateAtDir(cheatsheetDir string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+		tr, err := i18n.NewTranslationSetFromConfig(common.Log, lang)
+		if err != nil {
+			log.Fatal(err)
+		}
+		common.Tr = tr
 		mApp, _ := app.NewApp(mConfig, nil, common)
 		path := cheatsheetDir + "/Keybindings_" + lang + ".md"
 		file, err := os.Create(path)
@@ -191,11 +198,11 @@ func formatSections(tr *i18n.TranslationSet, bindingSections []*bindingSection) 
 
 	for _, section := range bindingSections {
 		content += formatTitle(section.title)
-		content += "<pre>\n"
+		content += "| Key | Action | Info |\n"
+		content += "|-----|--------|-------------|\n"
 		for _, binding := range section.bindings {
 			content += formatBinding(binding)
 		}
-		content += "</pre>\n"
 	}
 
 	return content
@@ -206,19 +213,15 @@ func formatTitle(title string) string {
 }
 
 func formatBinding(binding *types.Binding) string {
-	result := fmt.Sprintf("  <kbd>%s</kbd>: %s", escapeAngleBrackets(keybindings.LabelFromKey(binding.Key)), binding.Description)
+	action := keybindings.LabelFromKey(binding.Key)
+	description := binding.Description
 	if binding.Alternative != "" {
-		result += fmt.Sprintf(" (%s)", binding.Alternative)
+		action += fmt.Sprintf(" (%s)", binding.Alternative)
 	}
-	result += "\n"
 
-	return result
-}
-
-func escapeAngleBrackets(str string) string {
-	result := strings.ReplaceAll(str, ">", "&gt;")
-	result = strings.ReplaceAll(result, "<", "&lt;")
-	return result
+	// Use backticks for keyboard keys. Two backticks are needed with an inner space
+	//  to escape a key that is itself a backtick.
+	return fmt.Sprintf("| `` %s `` | %s | %s |\n", action, description, binding.Tooltip)
 }
 
 func italicize(str string) string {

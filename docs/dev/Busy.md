@@ -2,7 +2,7 @@
 
 ## The use-case
 
-This topic deserves its own doc because there there are a few touch points for it. We have a use-case for knowing when Lazygit is idle or busy because integration tests follow the following process:
+This topic deserves its own doc because there are a few touch points for it. We have a use-case for knowing when Lazygit is idle or busy because integration tests follow the following process:
 1) press a key
 2) wait until Lazygit is idle
 3) run assertion / press another key
@@ -57,7 +57,7 @@ go utils.Safe(f)
 
 Where `utils.Safe` is a helper function that ensures we clean up the gui if the goroutine panics.
 
-### Programmatically enqueing a UI event
+### Programmatically enqueueing a UI event
 
 This is invoked with `self.c.OnUIThread(f)`. Internally, it creates a task before enqueuing the function as an event (including the task in the event struct) and once that event is processed by the event queue (and any other pending events are processed) the task is removed from the map by calling `task.Done()`.
 

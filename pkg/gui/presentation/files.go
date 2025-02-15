@@ -21,24 +21,27 @@ const (
 func RenderFileTree(
 	tree filetree.IFileTree,
 	submoduleConfigs []*models.SubmoduleConfig,
+	showFileIcons bool,
+	showNumstat bool,
 ) []string {
 	collapsedPaths := tree.CollapsedPaths()
 	return renderAux(tree.GetRoot().Raw(), collapsedPaths, -1, -1, func(node *filetree.Node[models.File], treeDepth int, visualDepth int, isCollapsed bool) string {
 		fileNode := filetree.NewFileNode(node)
 
-		return getFileLine(isCollapsed, fileNode.GetHasUnstagedChanges(), fileNode.GetHasStagedChanges(), treeDepth, visualDepth, submoduleConfigs, node)
+		return getFileLine(isCollapsed, fileNode.GetHasUnstagedChanges(), fileNode.GetHasStagedChanges(), treeDepth, visualDepth, showNumstat, showFileIcons, submoduleConfigs, node)
 	})
 }
 
 func RenderCommitFileTree(
 	tree *filetree.CommitFileTreeViewModel,
 	patchBuilder *patch.PatchBuilder,
+	showFileIcons bool,
 ) []string {
 	collapsedPaths := tree.CollapsedPaths()
 	return renderAux(tree.GetRoot().Raw(), collapsedPaths, -1, -1, func(node *filetree.Node[models.CommitFile], treeDepth int, visualDepth int, isCollapsed bool) string {
 		status := commitFilePatchStatus(node, tree, patchBuilder)
 
-		return getCommitFileLine(isCollapsed, treeDepth, visualDepth, node, status)
+		return getCommitFileLine(isCollapsed, treeDepth, visualDepth, node, status, showFileIcons)
 	})
 }
 
@@ -109,6 +112,8 @@ func getFileLine(
 	hasStagedChanges bool,
 	treeDepth int,
 	visualDepth int,
+	showNumstat,
+	showFileIcons bool,
 	submoduleConfigs []*models.SubmoduleConfig,
 	node *filetree.Node[models.File],
 ) string {
@@ -150,9 +155,9 @@ func getFileLine(
 	isLinkedWorktree := file != nil && file.IsWorktree
 	isDirectory := file == nil
 
-	if icons.IsIconEnabled() {
+	if showFileIcons {
 		icon := icons.IconForFile(name, isSubmodule, isLinkedWorktree, isDirectory)
-		paint := color.C256(icon.Color, false)
+		paint := color.HEX(icon.Color, false)
 		output += paint.Sprint(icon.Icon) + nameColor.Sprint(" ")
 	}
 
@@ -160,6 +165,12 @@ func getFileLine(
 
 	if isSubmodule {
 		output += theme.DefaultTextColor.Sprint(" (submodule)")
+	}
+
+	if file != nil && showNumstat {
+		if lineChanges := formatLineChanges(file.LinesAdded, file.LinesDeleted); lineChanges != "" {
+			output += " " + lineChanges
+		}
 	}
 
 	return output
@@ -183,12 +194,30 @@ func formatFileStatus(file *models.File, restColor style.TextStyle) string {
 	return firstCharCl.Sprint(firstChar) + secondCharCl.Sprint(secondChar)
 }
 
+func formatLineChanges(linesAdded, linesDeleted int) string {
+	output := ""
+
+	if linesAdded != 0 {
+		output += style.FgGreen.Sprintf("+%d", linesAdded)
+	}
+
+	if linesDeleted != 0 {
+		if output != "" {
+			output += " "
+		}
+		output += style.FgRed.Sprintf("-%d", linesDeleted)
+	}
+
+	return output
+}
+
 func getCommitFileLine(
 	isCollapsed bool,
 	treeDepth int,
 	visualDepth int,
 	node *filetree.Node[models.CommitFile],
 	status patch.PatchStatus,
+	showFileIcons bool,
 ) string {
 	indentation := strings.Repeat("  ", visualDepth)
 	name := commitFileNameAtDepth(node, treeDepth)
@@ -236,9 +265,9 @@ func getCommitFileLine(
 	isSubmodule := false
 	isLinkedWorktree := false
 
-	if icons.IsIconEnabled() {
+	if showFileIcons {
 		icon := icons.IconForFile(name, isSubmodule, isLinkedWorktree, isDirectory)
-		paint := color.C256(icon.Color, false)
+		paint := color.HEX(icon.Color, false)
 		output += paint.Sprint(icon.Icon) + " "
 	}
 

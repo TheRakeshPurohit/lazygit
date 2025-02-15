@@ -3,6 +3,7 @@ package git_commands
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/jesseduffield/lazygit/pkg/commands/models"
@@ -31,13 +32,17 @@ func NewFileLoader(gitCommon *GitCommon, cmd oscommands.ICmdObjBuilder, config F
 
 type GetStatusFileOptions struct {
 	NoRenames bool
+	// If true, we'll show untracked files even if the user has set the config to hide them.
+	// This is useful for users with bare repos for dotfiles who default to hiding untracked files,
+	// but want to occasionally see them to `git add` a new file.
+	ForceShowUntracked bool
 }
 
 func (self *FileLoader) GetStatusFiles(opts GetStatusFileOptions) []*models.File {
 	// check if config wants us ignoring untracked files
 	untrackedFilesSetting := self.config.GetShowUntrackedFiles()
 
-	if untrackedFilesSetting == "" {
+	if opts.ForceShowUntracked || untrackedFilesSetting == "" {
 		untrackedFilesSetting = "all"
 	}
 	untrackedFilesArg := fmt.Sprintf("--untracked-files=%s", untrackedFilesSetting)
@@ -47,6 +52,14 @@ func (self *FileLoader) GetStatusFiles(opts GetStatusFileOptions) []*models.File
 		self.Log.Error(err)
 	}
 	files := []*models.File{}
+
+	fileDiffs := map[string]FileDiff{}
+	if self.GitCommon.Common.UserConfig().Gui.ShowNumstatInFilesView {
+		fileDiffs, err = self.getFileDiffs()
+		if err != nil {
+			self.Log.Error(err)
+		}
+	}
 
 	for _, status := range statuses {
 		if strings.HasPrefix(status.StatusString, "warning") {
@@ -58,6 +71,11 @@ func (self *FileLoader) GetStatusFiles(opts GetStatusFileOptions) []*models.File
 			Name:          status.Name,
 			PreviousName:  status.PreviousName,
 			DisplayString: status.StatusString,
+		}
+
+		if diff, ok := fileDiffs[status.Name]; ok {
+			file.LinesAdded = diff.LinesAdded
+			file.LinesDeleted = diff.LinesDeleted
 		}
 
 		models.SetStatusFields(file, status.Change)
@@ -87,6 +105,45 @@ func (self *FileLoader) GetStatusFiles(opts GetStatusFileOptions) []*models.File
 	return files
 }
 
+type FileDiff struct {
+	LinesAdded   int
+	LinesDeleted int
+}
+
+func (fileLoader *FileLoader) getFileDiffs() (map[string]FileDiff, error) {
+	diffs, err := fileLoader.gitDiffNumStat()
+	if err != nil {
+		return nil, err
+	}
+
+	splitLines := strings.Split(diffs, "\x00")
+
+	fileDiffs := map[string]FileDiff{}
+	for _, line := range splitLines {
+		splitLine := strings.Split(line, "\t")
+		if len(splitLine) != 3 {
+			continue
+		}
+
+		linesAdded, err := strconv.Atoi(splitLine[0])
+		if err != nil {
+			continue
+		}
+		linesDeleted, err := strconv.Atoi(splitLine[1])
+		if err != nil {
+			continue
+		}
+
+		fileName := splitLine[2]
+		fileDiffs[fileName] = FileDiff{
+			LinesAdded:   linesAdded,
+			LinesDeleted: linesDeleted,
+		}
+	}
+
+	return fileDiffs, nil
+}
+
 // GitStatus returns the file status of the repo
 type GitStatusOptions struct {
 	NoRenames         bool
@@ -100,15 +157,29 @@ type FileStatus struct {
 	PreviousName string
 }
 
-func (c *FileLoader) gitStatus(opts GitStatusOptions) ([]FileStatus, error) {
+func (fileLoader *FileLoader) gitDiffNumStat() (string, error) {
+	return fileLoader.cmd.New(
+		NewGitCmd("diff").
+			Arg("--numstat").
+			Arg("-z").
+			Arg("HEAD").
+			ToArgv(),
+	).DontLog().RunWithOutput()
+}
+
+func (self *FileLoader) gitStatus(opts GitStatusOptions) ([]FileStatus, error) {
 	cmdArgs := NewGitCmd("status").
 		Arg(opts.UntrackedFilesArg).
 		Arg("--porcelain").
 		Arg("-z").
-		ArgIf(opts.NoRenames, "--no-renames").
+		ArgIfElse(
+			opts.NoRenames,
+			"--no-renames",
+			fmt.Sprintf("--find-renames=%d%%", self.AppState.RenameSimilarityThreshold),
+		).
 		ToArgv()
 
-	statusLines, _, err := c.cmd.New(cmdArgs).DontLog().RunWithOutputs()
+	statusLines, _, err := self.cmd.New(cmdArgs).DontLog().RunWithOutputs()
 	if err != nil {
 		return []FileStatus{}, err
 	}

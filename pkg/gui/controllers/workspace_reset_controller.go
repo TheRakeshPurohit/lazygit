@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -31,10 +32,10 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.NukeWorkingTree)
 				if err := self.c.Git().WorkingTree.ResetAndClean(); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
-				if self.c.UserConfig.Gui.AnimateExplosion {
+				if self.c.UserConfig().Gui.AnimateExplosion {
 					self.animateExplosion()
 				}
 
@@ -53,7 +54,7 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.DiscardUnstagedFileChanges)
 				if err := self.c.Git().WorkingTree.DiscardAnyUnstagedFileChanges(); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -70,7 +71,7 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.RemoveUntrackedFiles)
 				if err := self.c.Git().WorkingTree.RemoveUntrackedFiles(); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -88,13 +89,13 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.RemoveStagedFiles)
 				if !self.c.Helpers().WorkingTree.IsWorkingTreeDirty() {
-					return self.c.ErrorMsg(self.c.Tr.NoTrackedStagedFilesStash)
+					return errors.New(self.c.Tr.NoTrackedStagedFilesStash)
 				}
 				if err := self.c.Git().Stash.SaveStagedChanges("[lazygit] tmp stash"); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 				if err := self.c.Git().Stash.DropNewest(); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -111,7 +112,7 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.SoftReset)
 				if err := self.c.Git().WorkingTree.ResetSoft("HEAD"); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -128,7 +129,7 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.MixedReset)
 				if err := self.c.Git().WorkingTree.ResetMixed("HEAD"); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -145,7 +146,7 @@ func (self *FilesController) createResetMenu() error {
 			OnPress: func() error {
 				self.c.LogAction(self.c.Tr.Actions.HardReset)
 				if err := self.c.Git().WorkingTree.ResetHard("HEAD"); err != nil {
-					return self.c.Error(err)
+					return err
 				}
 
 				return self.c.Refresh(
@@ -161,17 +162,14 @@ func (self *FilesController) createResetMenu() error {
 
 func (self *FilesController) animateExplosion() {
 	self.Explode(self.c.Views().Files, func() {
-		err := self.c.PostRefreshUpdate(self.c.Contexts().Files)
-		if err != nil {
-			self.c.Log.Error(err)
-		}
+		self.c.PostRefreshUpdate(self.c.Contexts().Files)
 	})
 }
 
 // Animates an explosion within the view by drawing a bunch of flamey characters
 func (self *FilesController) Explode(v *gocui.View, onDone func()) {
 	width := v.InnerWidth()
-	height := v.InnerHeight() + 1
+	height := v.InnerHeight()
 	styles := []style.TextStyle{
 		style.FgLightWhite.SetBold(),
 		style.FgYellow.SetBold(),
@@ -180,14 +178,14 @@ func (self *FilesController) Explode(v *gocui.View, onDone func()) {
 		style.FgBlack.SetBold(),
 	}
 
-	self.c.OnWorker(func(_ gocui.Task) {
+	self.c.OnWorker(func(_ gocui.Task) error {
 		max := 25
 		for i := 0; i < max; i++ {
 			image := getExplodeImage(width, height, i, max)
 			style := styles[(i*len(styles)/max)%len(styles)]
 			coloredImage := style.Sprint(image)
 			self.c.OnUIThread(func() error {
-				_ = v.SetOrigin(0, 0)
+				v.SetOrigin(0, 0)
 				v.SetContent(coloredImage)
 				return nil
 			})
@@ -198,6 +196,7 @@ func (self *FilesController) Explode(v *gocui.View, onDone func()) {
 			onDone()
 			return nil
 		})
+		return nil
 	})
 }
 

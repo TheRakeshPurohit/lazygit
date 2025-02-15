@@ -1,6 +1,8 @@
 package context
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -8,8 +10,10 @@ import (
 	"github.com/jesseduffield/lazygit/pkg/gui/keybindings"
 	"github.com/jesseduffield/lazygit/pkg/gui/types"
 	"github.com/jesseduffield/lazygit/pkg/utils"
-	"github.com/samber/lo"
+	"github.com/spf13/afero"
 )
+
+const PreservedCommitMessageFileName = "LAZYGIT_PENDING_COMMIT"
 
 type CommitMessageContext struct {
 	c *ContextCommon
@@ -31,8 +35,9 @@ type CommitMessageViewModel struct {
 	// if true, then upon escaping from the commit message panel, we will preserve
 	// the message so that it's still shown next time we open the panel
 	preserveMessage bool
-	// the full preserved message (combined summary and description)
-	preservedMessage string
+	// we remember the initial message so that we can tell whether we should preserve
+	// the message; if it's still identical to the initial message, we don't
+	initialMessage string
 	// invoked when pressing enter in the commit message panel
 	onConfirm func(string, string) error
 	// invoked when pressing the switch-to-editor key binding
@@ -73,16 +78,55 @@ func (self *CommitMessageContext) GetSelectedIndex() int {
 	return self.viewModel.selectedindex
 }
 
+func (self *CommitMessageContext) GetPreservedMessagePath() string {
+	return filepath.Join(self.c.Git().RepoPaths.WorktreeGitDirPath(), PreservedCommitMessageFileName)
+}
+
 func (self *CommitMessageContext) GetPreserveMessage() bool {
 	return self.viewModel.preserveMessage
 }
 
-func (self *CommitMessageContext) GetPreservedMessage() string {
-	return self.viewModel.preservedMessage
+func (self *CommitMessageContext) getPreservedMessage() (string, error) {
+	buf, err := afero.ReadFile(self.c.Fs, self.GetPreservedMessagePath())
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(buf), nil
 }
 
-func (self *CommitMessageContext) SetPreservedMessage(message string) {
-	self.viewModel.preservedMessage = message
+func (self *CommitMessageContext) GetPreservedMessageAndLogError() string {
+	msg, err := self.getPreservedMessage()
+	if err != nil {
+		self.c.Log.Errorf("error when retrieving persisted commit message: %v", err)
+	}
+	return msg
+}
+
+func (self *CommitMessageContext) setPreservedMessage(message string) error {
+	preservedFilePath := self.GetPreservedMessagePath()
+
+	if len(message) == 0 {
+		err := self.c.Fs.Remove(preservedFilePath)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	return afero.WriteFile(self.c.Fs, preservedFilePath, []byte(message), 0o644)
+}
+
+func (self *CommitMessageContext) SetPreservedMessageAndLogError(message string) {
+	if err := self.setPreservedMessage(message); err != nil {
+		self.c.Log.Errorf("error when persisting commit message: %v", err)
+	}
+}
+
+func (self *CommitMessageContext) GetInitialMessage() string {
+	return strings.TrimSpace(self.viewModel.initialMessage)
 }
 
 func (self *CommitMessageContext) GetHistoryMessage() string {
@@ -102,30 +146,33 @@ func (self *CommitMessageContext) SetPanelState(
 	summaryTitle string,
 	descriptionTitle string,
 	preserveMessage bool,
+	initialMessage string,
 	onConfirm func(string, string) error,
 	onSwitchToEditor func(string) error,
 ) {
 	self.viewModel.selectedindex = index
 	self.viewModel.preserveMessage = preserveMessage
+	self.viewModel.initialMessage = initialMessage
 	self.viewModel.onConfirm = onConfirm
 	self.viewModel.onSwitchToEditor = onSwitchToEditor
 	self.GetView().Title = summaryTitle
 	self.c.Views().CommitDescription.Title = descriptionTitle
 
-	subtitleTemplate := lo.Ternary(onSwitchToEditor != nil, self.c.Tr.CommitDescriptionSubTitle, self.c.Tr.CommitDescriptionSubTitleNoSwitch)
-	self.c.Views().CommitDescription.Subtitle = utils.ResolvePlaceholderString(subtitleTemplate,
+	self.c.Views().CommitDescription.Subtitle = utils.ResolvePlaceholderString(self.c.Tr.CommitDescriptionSubTitle,
 		map[string]string{
-			"togglePanelKeyBinding":    keybindings.Label(self.c.UserConfig.Keybinding.Universal.TogglePanel),
-			"switchToEditorKeyBinding": keybindings.Label(self.c.UserConfig.Keybinding.CommitMessage.SwitchToEditor),
+			"togglePanelKeyBinding": keybindings.Label(self.c.UserConfig().Keybinding.Universal.TogglePanel),
+			"commitMenuKeybinding":  keybindings.Label(self.c.UserConfig().Keybinding.CommitMessage.CommitMenu),
 		})
+
+	self.c.Views().CommitDescription.Visible = true
 }
 
 func (self *CommitMessageContext) RenderCommitLength() {
-	if !self.c.UserConfig.Gui.CommitLength.Show {
-		return
+	if self.c.UserConfig().Gui.CommitLength.Show {
+		self.c.Views().CommitMessage.Subtitle = getBufferLength(self.c.Views().CommitMessage)
+	} else {
+		self.c.Views().CommitMessage.Subtitle = ""
 	}
-
-	self.c.Views().CommitMessage.Subtitle = getBufferLength(self.c.Views().CommitMessage)
 }
 
 func getBufferLength(view *gocui.View) string {

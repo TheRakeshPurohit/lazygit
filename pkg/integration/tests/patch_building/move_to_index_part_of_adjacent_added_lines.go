@@ -40,7 +40,6 @@ var MoveToIndexPartOfAdjacentAddedLines = NewIntegrationTest(NewIntegrationTestA
 
 		t.Views().PatchBuilding().
 			IsFocused().
-			PressEnter().
 			PressPrimaryAction()
 
 		t.Views().Information().Content(Contains("Building patch"))
@@ -65,6 +64,6 @@ var MoveToIndexPartOfAdjacentAddedLines = NewIntegrationTest(NewIntegrationTestA
 			)
 
 		t.Views().Main().
-			Content(Contains("+1st line\n 2nd line\n"))
+			Content(Contains("+1st line\n 2nd line"))
 	},
 })
